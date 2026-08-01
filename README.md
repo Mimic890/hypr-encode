@@ -1,56 +1,57 @@
 # hypr-encode
 
-Terminal media file inspector powered by [ffprobe](https://ffmpeg.org/ffprobe.html).
+Fast terminal media inspection powered by [ffprobe](https://ffmpeg.org/ffprobe.html).
 
-Displays detailed, colour-coded information about video, audio, and image files — codecs, HDR format, language tracks, subtitles, metadata tags, and more.
-
-## Usage
-
-```
-hypr-encode [path]
-```
-
-| Invocation               | Behaviour                                   |
-|--------------------------|---------------------------------------------|
-| `hypr-encode`            | Scan current directory                      |
-| `hypr-encode ./Movies`   | Scan a directory (one card per media file)  |
-| `hypr-encode file.mkv`   | Detailed view for a single file             |
-
-## What it shows
-
-**Single file** — full breakdown:
-- Filename, file size, duration, overall bitrate, chapter count
-- Metadata tags (title, artist, album, encoder, EXIF for images…)
-- Video track: codec, resolution, fps, frame count, bit depth, pixel format, colour range, bitrate, track size
-- HDR info: HDR10 (MaxCLL / MaxFALL / peak nits), HDR10+, HLG, Dolby Vision (profile / level / compat layer)
-- Audio tracks: codec, channels, sample rate, bitrate, Atmos / DTS:X badges
-- Subtitle tracks: format, language, forced flag, size
-- Language tags are colour-coded by language
-
-**Directory** — compact card for every media file:
-- Multiple track cards flow into columns that adapt to terminal width
-
-## Requirements
-
-- Go 1.21+
-- `ffprobe` in `$PATH` (part of the [ffmpeg](https://ffmpeg.org/) package)
+It shows codecs, stream sizes, frame rate, HDR metadata, audio and subtitle tracks, language tags, and common media metadata without changing the inspected files.
 
 ## Install
 
+Requirements: Go 1.21+ and `ffprobe` from [FFmpeg](https://ffmpeg.org/).
+
 ```sh
-git clone https://github.com/Mimic890/hypr-encode.git
-cd hypr-encode
-go build -o hyprenc .
+go install github.com/Mimic890/hypr-encode@latest
 ```
 
-Move the binary somewhere on your `$PATH`, e.g. `~/.local/bin/`.
-
-## Colours
-
-Uses 24-bit ANSI colour codes. Set `NO_COLOR` to any non-empty value to disable all colours ([no-color.org](https://no-color.org/)):
+Or build the repository locally:
 
 ```sh
-NO_COLOR=1 hyprenc file.mkv
+go build -o hypr-encode .
+```
+
+## Usage
+
+```text
+hypr-encode [file|directory]
+```
+
+| Invocation | Behavior |
+| --- | --- |
+| `hypr-encode` | Inspect media files in the current directory |
+| `hypr-encode ./Movies` | Inspect media files in one directory |
+| `hypr-encode file.mkv` | Show a detailed view of one file |
+
+Directory scans are non-recursive, skip hidden entries and subdirectories, and discover media by file extension. Every file is attempted; any probe failure makes the command exit non-zero after the remaining files are shown.
+
+Each `ffprobe` process has a 30-second timeout. Paths are passed as explicit local inputs, and filenames and metadata are sanitized before terminal output.
+
+## Output
+
+- File size, duration, overall bitrate, chapters, and common metadata
+- Video codec, resolution, average frame rate, frame count, bit depth, pixel format, color range, bitrate, and stream size
+- HDR10, HDR10+, HLG, and Dolby Vision data when reported by `ffprobe`
+- Audio codec, channels, sample rate, bitrate, stream size, and detectable Atmos or DTS:X profiles
+- Subtitle format, language, forced flag, title, and stream size
+- Still-image dimensions, pixel format, bit depth, and common EXIF tags
+
+Colors are enabled only for terminal output. Set [`NO_COLOR`](https://no-color.org/) to any non-empty value to disable them explicitly.
+
+## Development
+
+```sh
+gofmt -w .
+go test ./...
+go vet ./...
+go build ./...
 ```
 
 ## License
