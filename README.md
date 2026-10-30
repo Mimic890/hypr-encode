@@ -10,7 +10,7 @@ Every command has `--json` output with a versioned schema and documented exit co
 
 ## Install
 
-Requirements: Go 1.26+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits and [ExifTool](https://exiftool.org/) for image metadata. `hypr-encode doctor` lists what is installed.
+Requirements: Go 1.26+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits [ExifTool](https://exiftool.org/) for image metadata, and [LibRaw](https://www.libraw.org/download)'s `dcraw_emu` for camera RAW photos (`apt install libraw-bin`, or `bin/` of the LibRaw Windows zip). FFmpeg 7.1+ is needed for tiled HEIF/AVIF photos. `hypr-encode doctor` lists what is installed.
 
 ```sh
 go install github.com/Mimic890/hypr-encode@latest
@@ -119,7 +119,7 @@ Outputs in a directory are named by a template. By default (`{name}.conv`, appli
 | `{crf}` | Constant quality of the main stream |
 | `{date}` | Today, `YYYY-MM-DD` |
 
-Values describe the output; a copied track takes its value from the input (ffprobe). The template is split at dots, and a segment whose placeholder is empty is dropped: with `{name}.{encoder}.{bitdepth}bit.{fps}fps`, `file1.mkv` becomes `file1.x265.10bit.25fps.mkv` with `hevc`, and `song.opus.opus` with `opus` (no video, so the bit depth and fps segments go). `/`, `\` and control characters are removed from values. Values come from the first video and audio stream and ignore raw `--ffmpeg-arg` filters such as scaling.
+Values describe the output; a copied track takes its value from the input (ffprobe). The template is split at dots, and a segment whose placeholder is empty is dropped: with `{name}.{encoder}.{bitdepth}bit.{fps}fps`, `file1.mkv` becomes `file1.x265.10bit.25fps.mkv` with `hevc`, and `song.opus.opus` with `opus` (no video, so the bit depth and fps segments go). `/`, `\` and control characters are removed from values. `{res}`, `{fps}` and `{bitdepth}` come from the first video track and do not account for scaling or a pixel format set with `--ffmpeg-arg`.
 
 The template is taken from `--name-template`, else the preset's `outputTemplate`, else `config.yml`. With `--on-conflict increment`, an existing `file1.conv.mkv` makes the output `file1.conv.1.mkv`, then `file1.conv.2.mkv`. `--dry-run` and `--json` show the final names.
 
@@ -134,7 +134,7 @@ The template is taken from `--name-template`, else the preset's `outputTemplate`
 
 **Progress.** Text mode writes progress and per-file results to stderr: a live block on a terminal, finished files only otherwise. With `--json`, stdout carries JSON Lines (see below).
 
-Image inputs: ffmpeg reads JPEG, PNG, WebP, TIFF, BMP, GIF, AVIF and HEIC/HEIF. DNG is decoded only partially, and camera RAW formats (CR2, CR3, NEF, ARW, RAF, ORF) are not supported. Image conversion does not carry over EXIF metadata.
+**Photos.** ffmpeg reads JPEG, PNG, WebP, TIFF, BMP, GIF and single-image HEIC/HEIF/AVIF itself. Tiled HEIF/AVIF images, which include every iPhone photo, are stored as a grid of small tiles: ffmpeg 8.0 outputs only the first tile, so hypr-encode reads the grid with `ffprobe -show_stream_groups` (FFmpeg 7.1+) and stacks and crops the tiles itself. An output whose size differs from the grid is an error, never a single tile. ffmpeg 8.0 ignores the rotation of HEIF photos (`irot` and EXIF Orientation), so a rotated photo comes out unrotated. Camera RAW and DNG files (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF, SRW and other LibRaw formats) are decoded by `dcraw_emu` with the camera white balance and piped to ffmpeg as 16-bit PPM; without it they fail with a clear error. Directory inputs and the TUI list only formats ffmpeg reads, so RAW files must be given by name. Image conversion does not carry over EXIF metadata.
 
 ### preset
 
@@ -241,7 +241,7 @@ ffmpeg and exiftool write a temp file next to the target and rename it only on s
 hypr-encode doctor [--json]
 ```
 
-Checks `ffprobe`, `ffmpeg`, `mkvpropedit` and `exiftool`: whether each is in `PATH` and which version it reports. It also test-encodes a short clip with every GPU preset, since an encoder listed by ffmpeg may still lack the hardware or driver. Exits with code 4 if any tool is missing; GPU results do not affect the exit code. Commands that do not need a missing tool keep working.
+Checks `ffprobe`, `ffmpeg`, `mkvpropedit`, `exiftool` and `dcraw_emu`: whether each is in `PATH` and which version it reports (for `dcraw_emu`, the LibRaw version printed by `simple_dcraw` next to it). It also test-encodes a short clip with every GPU preset, since an encoder listed by ffmpeg may still lack the hardware or driver. Exits with code 4 if any tool is missing; GPU results do not affect the exit code. Commands that do not need a missing tool keep working.
 
 ### tui
 
@@ -330,7 +330,7 @@ The stream objects are abbreviated above; the full field list is in [`testdata/i
 
 In `info --json`, image files carry an `exif` object with the same groups, and every track has `default` and `tags`.
 
-`convert --dry-run --json` prints `{"schemaVersion":1,"jobs":[{"jobId","input","output","preset","load","threads","command":["ffmpeg",...]}]}`; see [`testdata/convert-dry-run.golden`](testdata/convert-dry-run.golden). The command shows the final output path; the real run writes to a temp file first.
+`convert --dry-run --json` prints `{"schemaVersion":1,"jobs":[{"jobId","input","output","preset","load","threads","decoder":[...],"command":["ffmpeg",...]}]}`, where `decoder` is the `dcraw_emu` command whose output the ffmpeg command reads, set only for camera RAW; see [`testdata/convert-dry-run.golden`](testdata/convert-dry-run.golden). The command shows the final output path; the real run writes to a temp file first.
 
 `preset list --json` prints `{"schemaVersion":1,"presets":[...],"unavailable":[{"name","error"}]}`, and `preset show --json` prints `{"schemaVersion":1,"preset":{...}}` with the fields of `presets.yml` plus `source` (`builtin` or `user`); see [`testdata/preset-show.golden`](testdata/preset-show.golden).
 

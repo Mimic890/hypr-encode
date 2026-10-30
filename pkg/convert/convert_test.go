@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/Mimic890/hypr-encode/internal/fsutil"
 	"github.com/Mimic890/hypr-encode/internal/testmedia"
 	"github.com/Mimic890/hypr-encode/pkg/probe"
+	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
 func builtin(t *testing.T, name string) Preset {
@@ -49,7 +51,7 @@ func TestBuildArgs(t *testing.T) {
 		{"avif", 2, "-threads 2 -i in.mkv -map 0:v:0 -c copy -c:V libaom-av1 -crf:V 30 -b:V 0 -still-picture 1 -cpu-used 6 -threads 2 -frames:v 1 -update 1 out.mkv"},
 	}
 	for _, test := range tests {
-		args, err := BuildArgs(builtin(t, test.preset), "in.mkv", "out.mkv", test.threads)
+		args, err := BuildArgs(builtin(t, test.preset), Source{Path: "in.mkv"}, "out.mkv", test.threads)
 		if err != nil {
 			t.Errorf("%s: %v", test.preset, err)
 			continue
@@ -62,8 +64,33 @@ func TestBuildArgs(t *testing.T) {
 	p := builtin(t, "opus")
 	crf := 5
 	p.Audio.CRF = &crf
-	if _, err := BuildArgs(p, "a", "b", 0); err == nil || !strings.Contains(err.Error(), "libopus") {
+	if _, err := BuildArgs(p, Source{Path: "a"}, "b", 0); err == nil || !strings.Contains(err.Error(), "libopus") {
 		t.Errorf("crf on libopus: err = %v", err)
+	}
+}
+
+func TestBuildArgsImageSources(t *testing.T) {
+	head := "-hide_banner -nostdin -y -v error -progress pipe:1 -nostats "
+	jpeg := builtin(t, "jpeg")
+	raw := Source{Path: "pipe:0", Decoder: []string{"dcraw_emu", "-w", "-6", "-Z", "-", "/p/a.cr3"}}
+	grid := &probe.TileGrid{Width: 1440, Height: 960, Tiles: []probe.Tile{{Stream: 0, X: 0, Y: 0}, {Stream: 1, X: 1280, Y: 0}, {Stream: 2, X: 0, Y: 720}, {Stream: 3, X: 1280, Y: 720}}}
+	rotated := &probe.TileGrid{Width: 640, Height: 360, CropX: 2, CropY: 4, Rotation: -90, Tiles: []probe.Tile{{Stream: 5, X: 0, Y: 0}}}
+	tests := []struct {
+		src  Source
+		want string
+	}{
+		{raw, "-f ppm_pipe -i pipe:0 -map 0:v:0 -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+		{Source{Path: "a.heic", Grid: grid}, "-i a.heic -filter_complex [0:0][0:1][0:2][0:3]xstack=inputs=4:layout=0_0|1280_0|0_720|1280_720,crop=1440:960:0:0[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+		{Source{Path: "a.heic", Grid: rotated}, "-i a.heic -filter_complex [0:5]null,crop=640:360:2:4,transpose=clock[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+	}
+	for _, test := range tests {
+		args, err := BuildArgs(jpeg, test.src, "out.jpg", 0)
+		if got := strings.Join(args, " "); err != nil || got != head+test.want {
+			t.Errorf("%s:\n got %s (%v)\nwant %s", test.src.Path, got, err, head+test.want)
+		}
+	}
+	if w, h := rotated.DisplaySize(); w != 360 || h != 640 {
+		t.Errorf("rotated DisplaySize = %dx%d", w, h)
 	}
 }
 
@@ -353,6 +380,66 @@ func TestPlanProbedPlaceholders(t *testing.T) {
 	p.Video.PixFmt = "yuv420p10le"
 	if jobs, _ := Plan([]string{src}, dir, p, Naming{Template: "{name}.{bitdepth}bit"}); filepath.Base(jobs[0].Output) != "clip.10bit.mkv" {
 		t.Fatalf("pixFmt output = %s", jobs[0].Output)
+	}
+}
+
+func TestOpenRawWithoutDcrawEmu(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := Open(context.Background(), "photo.CR3"); !errors.Is(err, tools.ErrMissing) || !strings.Contains(err.Error(), "LibRaw") {
+		t.Fatalf("Open() = %v, want a missing dcraw_emu error", err)
+	}
+}
+
+// convertImage runs the jpeg preset on in and returns the output size.
+func convertImage(t *testing.T, in string) (int, int) {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "out.jpg")
+	if err := Run(context.Background(), Job{Input: in, Output: out, Preset: builtin(t, "jpeg")}, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	info, err := probe.ScanFile(out)
+	if err != nil || len(info.Video) != 1 {
+		t.Fatalf("output = %+v, %v", info, err)
+	}
+	assertNoTempFiles(t, filepath.Dir(out))
+	return info.Video[0].Width, info.Video[0].Height
+}
+
+func TestConvertCameraRaw(t *testing.T) {
+	testmedia.Generate(t, "skip-without-ffmpeg.wav")
+	if _, err := exec.LookPath("dcraw_emu"); err != nil {
+		t.Skip("dcraw_emu not installed")
+	}
+	for url, size := range map[string][2]int{
+		"https://raw.pixls.us/data/Olympus/E-M1MarkII/Olympus_EM1mk2_Standard_20MP.ORF": {5240, 3912},
+		"https://raw.pixls.us/data/Canon/Canon%20EOS%20M200/_MG_2231.CR3":               {6024, 4020},
+	} {
+		if w, h := convertImage(t, testmedia.Fetch(t, url)); w != size[0] || h != size[1] {
+			t.Errorf("%s: %dx%d, want %dx%d", filepath.Base(url), w, h, size[0], size[1])
+		}
+	}
+}
+
+func TestConvertTiledHEIF(t *testing.T) {
+	testmedia.Generate(t, "skip-without-ffmpeg.wav")
+	if out, _ := exec.Command("ffprobe", "-h").CombinedOutput(); !strings.Contains(string(out), "show_stream_groups") {
+		t.Skip("ffprobe is older than 7.1")
+	}
+	base := "https://github.com/nokiatech/heif_conformance/raw/master/conformance_files/"
+	for name, size := range map[string][2]int{
+		"C007.heic": {2560, 1440}, // 2x2 tiles
+		"C022.heic": {1440, 960},  // 2x2 tiles of 1280x720, cropped
+	} {
+		if w, h := convertImage(t, testmedia.Fetch(t, base+name)); w != size[0] || h != size[1] {
+			t.Errorf("%s: %dx%d, want %dx%d", name, w, h, size[0], size[1])
+		}
+	}
+
+	// A result smaller than the grid is an error, never a single tile.
+	small := testmedia.Generate(t, "small.jpg")
+	err := checkGridSize(context.Background(), small, &probe.TileGrid{Width: 2560, Height: 1440})
+	if err == nil || !strings.Contains(err.Error(), "64x48") {
+		t.Fatalf("checkGridSize() = %v", err)
 	}
 }
 

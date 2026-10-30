@@ -51,6 +51,10 @@ func Run(ctx context.Context, job Job, threads int, onProgress func(Progress)) (
 	if _, err := os.Stat(job.Output); err == nil && !job.Overwrite {
 		return fmt.Errorf("%s %w", job.Output, fsutil.ErrExists)
 	}
+	src, err := Open(ctx, job.Input)
+	if err != nil {
+		return err
+	}
 
 	var durationMs int64
 	var fps float64
@@ -77,20 +81,43 @@ func Run(ctx context.Context, job Job, threads int, onProgress func(Progress)) (
 			os.Remove(tmp)
 		}
 	}()
-	args, err := BuildArgs(job.Preset, job.Input, tmp, threads)
+	args, err := BuildArgs(job.Preset, src, tmp, threads)
 	if err != nil {
 		return err
 	}
 
 	cmd := exec.CommandContext(ctx, ffmpeg, args...)
 	cmd.WaitDelay = 5 * time.Second
-	var stderr bytes.Buffer
+	var stderr, decStderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	var dec *exec.Cmd
+	var pr *os.File
+	if src.Decoder != nil {
+		dec = exec.CommandContext(ctx, src.Decoder[0], src.Decoder[1:]...)
+		dec.WaitDelay = 5 * time.Second
+		dec.Stderr = &decStderr
+		var pw *os.File
+		if pr, pw, err = os.Pipe(); err != nil {
+			return err
+		}
+		dec.Stdout, cmd.Stdin = pw, pr
+		err = dec.Start()
+		pw.Close() // only the children may hold the pipe, so each sees the other exit
+		if err != nil {
+			pr.Close()
+			return err
+		}
+		defer dec.Wait() // reaps the decoder on early returns
+	}
+	err = cmd.Start()
+	if pr != nil {
+		pr.Close()
+	}
+	if err != nil {
 		return err
 	}
 	readProgress(stdout, durationMs, fps, onProgress)
@@ -98,10 +125,38 @@ func Run(ctx context.Context, job Job, threads int, onProgress func(Progress)) (
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if dec != nil {
+		if decErr := dec.Wait(); decErr != nil && decStderr.Len() > 0 {
+			return fmt.Errorf("dcraw_emu failed on %q: %s", filepath.Base(job.Input), ffmpegError(decStderr.String(), decErr))
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("ffmpeg failed on %q: %s", filepath.Base(job.Input), ffmpegError(stderr.String(), err))
 	}
+	if src.Grid != nil {
+		if err := checkGridSize(ctx, tmp, src.Grid); err != nil {
+			return fmt.Errorf("%s: %w", filepath.Base(job.Input), err)
+		}
+	}
 	return fsutil.Commit(tmp, job.Output, job.Overwrite)
+}
+
+// checkGridSize refuses an output whose size differs from the tile grid's,
+// so a single tile is never passed off as the whole image.
+func checkGridSize(ctx context.Context, output string, g *probe.TileGrid) error {
+	info, err := probe.ScanFileContext(ctx, output)
+	if err != nil {
+		return err
+	}
+	w, h := g.DisplaySize()
+	if len(info.Video) == 0 || info.Video[0].Width != w || info.Video[0].Height != h {
+		got := "no image"
+		if len(info.Video) > 0 {
+			got = fmt.Sprintf("%dx%d", info.Video[0].Width, info.Video[0].Height)
+		}
+		return fmt.Errorf("output is %s but the tile grid is %dx%d; not writing a partial image", got, w, h)
+	}
+	return nil
 }
 
 // ffmpegError returns the last lines ffmpeg printed, which hold the actual reason.
@@ -169,7 +224,7 @@ func Verify(ctx context.Context, p Preset) error {
 	p.InputArgs = append(append([]string(nil), p.InputArgs...), "-f", "lavfi")
 	p.Args = append(append([]string(nil), p.Args...), "-f", "null")
 	p.Tracks = nil
-	args, err := BuildArgs(p, "testsrc2=size=256x256:rate=10:duration=0.3", "-", 0)
+	args, err := BuildArgs(p, Source{Path: "testsrc2=size=256x256:rate=10:duration=0.3"}, "-", 0)
 	if err != nil {
 		return err
 	}

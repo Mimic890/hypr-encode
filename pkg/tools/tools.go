@@ -6,18 +6,21 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
 // Known lists every external tool hypr-encode can use, in display order.
-var Known = []string{"ffprobe", "ffmpeg", "mkvpropedit", "exiftool"}
+var Known = []string{"ffprobe", "ffmpeg", "mkvpropedit", "exiftool", "dcraw_emu"}
 
 var installHints = map[string]string{
 	"ffprobe":     "install FFmpeg",
 	"ffmpeg":      "install FFmpeg",
 	"mkvpropedit": "install MKVToolNix",
 	"exiftool":    "install ExifTool",
+	"dcraw_emu":   "install the LibRaw tools (libraw-bin, or bin/ of the LibRaw Windows zip)",
 }
 
 var versionArgs = map[string]string{
@@ -73,6 +76,10 @@ func Check(ctx context.Context, name string) Status {
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if name == "dcraw_emu" {
+		st.Version = libRawVersion(ctx, path)
+		return st
+	}
 	out, err := exec.CommandContext(ctx, path, versionArgs[name]).Output()
 	if err != nil {
 		st.Error = "version check failed: " + err.Error()
@@ -93,4 +100,17 @@ func parseVersion(out string) string {
 		return strings.TrimPrefix(f[1], "v")
 	}
 	return strings.TrimSpace(line) // exiftool prints the bare version
+}
+
+var libRawBanner = regexp.MustCompile(`LibRaw (\d+\.\d+\.\d+)`)
+
+// libRawVersion asks simple_dcraw, which ships next to dcraw_emu in every
+// LibRaw build, for the version: dcraw_emu has no version flag. "" if unknown.
+func libRawVersion(ctx context.Context, dcrawEmu string) string {
+	sibling := filepath.Join(filepath.Dir(dcrawEmu), "simple_dcraw"+filepath.Ext(dcrawEmu))
+	out, _ := exec.CommandContext(ctx, sibling).CombinedOutput() // prints its usage and exits non-zero
+	if m := libRawBanner.FindSubmatch(out); m != nil {
+		return string(m[1])
+	}
+	return ""
 }

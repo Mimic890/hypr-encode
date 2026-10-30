@@ -115,6 +115,7 @@ type dryRunJob struct {
 	Preset  string   `json:"preset"`
 	Load    string   `json:"load"`
 	Threads int      `json:"threads"`
+	Decoder []string `json:"decoder,omitempty"` // camera RAW: its stdout feeds the ffmpeg command
 	Command []string `json:"command"`
 }
 
@@ -214,14 +215,22 @@ func (a *app) convert(ctx context.Context, args []string) error {
 		}
 		doc.SchemaVersion = schemaVersion
 		for _, job := range planned {
-			cmd, err := convert.BuildArgs(p, job.Input, job.Output, threads)
+			src, err := convert.Open(ctx, job.Input)
+			if err != nil {
+				return err
+			}
+			cmd, err := convert.BuildArgs(p, src, job.Output, threads)
 			if err != nil {
 				return usageErr("convert: %v", err)
 			}
 			cmd = append([]string{"ffmpeg"}, cmd...)
-			doc.Jobs = append(doc.Jobs, dryRunJob{job, p.Name, p.Load, threads, cmd})
+			doc.Jobs = append(doc.Jobs, dryRunJob{job, p.Name, p.Load, threads, src.Decoder, cmd})
 			if !a.json {
-				fmt.Fprintln(a.stdout, shellJoin(cmd))
+				line := shellJoin(cmd)
+				if src.Decoder != nil {
+					line = shellJoin(src.Decoder) + " | " + line
+				}
+				fmt.Fprintln(a.stdout, line)
 			}
 		}
 		if a.json {

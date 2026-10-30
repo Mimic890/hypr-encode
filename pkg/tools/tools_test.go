@@ -3,6 +3,9 @@ package tools
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -28,5 +31,20 @@ func TestMissingTool(t *testing.T) {
 	}
 	if st := Check(context.Background(), "ffprobe"); st.Found || st.Error == "" {
 		t.Fatalf("Check() = %+v", st)
+	}
+}
+
+func TestLibRawVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a shell script as a fake simple_dcraw")
+	}
+	dir := t.TempDir()
+	usage := "#!/bin/sh\necho 'simple_dcraw - LibRaw 0.22.3-Release sample. Emulates dcraw' >&2\nexit 1\n"
+	os.WriteFile(filepath.Join(dir, "simple_dcraw"), []byte(usage), 0o755)
+	if got := libRawVersion(context.Background(), filepath.Join(dir, "dcraw_emu")); got != "0.22.3" {
+		t.Fatalf("libRawVersion() = %q", got)
+	}
+	if got := libRawVersion(context.Background(), filepath.Join(t.TempDir(), "dcraw_emu")); got != "" {
+		t.Fatalf("without simple_dcraw: %q", got)
 	}
 }
