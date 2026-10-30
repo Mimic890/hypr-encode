@@ -299,6 +299,9 @@ func isImageCodec(codec string) bool {
 
 // isImageFile distinguishes image containers from videos using image codecs.
 func isImageFile(info *probe.MediaInfo) bool {
+	if info.Format == "raw" { // camera RAW, described by exiftool alone
+		return true
+	}
 	if len(info.Audio) > 0 || len(info.Subtitle) > 0 {
 		return false
 	}
@@ -472,6 +475,15 @@ func printFileCard(w io.Writer, info *probe.MediaInfo, tw int, num int) {
 	numTag := anMagenta + fmt.Sprintf("#%d", num) + anReset + "  "
 	line(numTag + anBold + visTrunc(safeText(info.FileName), contentW-visLen(numTag)) + anReset)
 	line(anGray + buildMeta(info) + anReset)
+	if info.Format == "raw" {
+		parts := []string{"Camera RAW"}
+		for _, tag := range []string{"Model", "ImageSize"} {
+			if v := info.Tags[tag]; v != "" {
+				parts = append(parts, safeText(v))
+			}
+		}
+		line(strings.Join(parts, "  ·  "))
+	}
 
 	image := isImageFile(info)
 	for _, v := range info.Video {

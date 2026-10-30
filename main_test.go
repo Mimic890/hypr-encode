@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -218,5 +219,23 @@ func TestMediaPaths(t *testing.T) {
 	want := []string{filepath.Join(dir, "a.mkv"), filepath.Join(dir, "b.MP4")}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("mediaPaths() = %v, want %v", paths, want)
+	}
+}
+
+func TestInfoRawWithoutExifTool(t *testing.T) {
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe not installed")
+	}
+	bin := t.TempDir() // ffprobe only, no exiftool
+	if err := os.Symlink(ffprobe, filepath.Join(bin, "ffprobe")); err != nil {
+		t.Skip(err)
+	}
+	t.Setenv("PATH", bin)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "shot.NEF"), []byte("raw"), 0o600)
+	code, out, stderr := runApp(context.Background(), "info", "--json", dir)
+	if code != exitOK || !strings.Contains(out, `"format": "raw"`) || !strings.Contains(out, "exiftool needed") {
+		t.Fatalf("code %d, out %s, stderr %s", code, out, stderr)
 	}
 }

@@ -15,22 +15,13 @@ import (
 // TileGrid is a HEIF or AVIF image stored as tiles that must be stacked and
 // cropped, like every photo an iPhone takes.
 type TileGrid struct {
-	Width, Height int // image size after cropping, before rotation
+	Width, Height int // image size after cropping
 	CropX, CropY  int
-	Rotation      int // display matrix rotation in degrees, counterclockwise; 0 when none
 	Tiles         []Tile
 }
 
 // Tile is one tile stream and its position in the stacked image.
 type Tile struct{ Stream, X, Y int }
-
-// DisplaySize is the image size after rotation.
-func (g *TileGrid) DisplaySize() (w, h int) {
-	if g.Rotation%180 != 0 {
-		return g.Height, g.Width
-	}
-	return g.Width, g.Height
-}
 
 // PrimaryTileGrid returns the tile grid ffprobe marks as the default image of
 // path, or nil when the primary image is not tiled.
@@ -59,13 +50,10 @@ func PrimaryTileGrid(ctx context.Context, path string) (*TileGrid, error) {
 				Default int `json:"default"`
 			} `json:"disposition"`
 			Components []struct {
-				Width        int `json:"width"`
-				Height       int `json:"height"`
-				CropX        int `json:"horizontal_offset"`
-				CropY        int `json:"vertical_offset"`
-				SideDataList []struct {
-					Rotation float64 `json:"rotation"`
-				} `json:"side_data_list"`
+				Width         int `json:"width"`
+				Height        int `json:"height"`
+				CropX         int `json:"horizontal_offset"`
+				CropY         int `json:"vertical_offset"`
 				Subcomponents []struct {
 					Stream int `json:"stream_index"`
 					X      int `json:"tile_horizontal_offset"`
@@ -83,9 +71,6 @@ func PrimaryTileGrid(ctx context.Context, path string) (*TileGrid, error) {
 		}
 		c := g.Components[0]
 		grid := &TileGrid{Width: c.Width, Height: c.Height, CropX: c.CropX, CropY: c.CropY}
-		for _, sd := range c.SideDataList {
-			grid.Rotation = int(sd.Rotation)
-		}
 		for _, t := range c.Subcomponents {
 			grid.Tiles = append(grid.Tiles, Tile{t.Stream, t.X, t.Y})
 		}

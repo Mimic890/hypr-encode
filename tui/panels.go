@@ -34,7 +34,11 @@ func kv(label, value string) string {
 // infoLines summarizes a file: format, streams and the main tags.
 func infoLines(st *fileState) []string {
 	if st.info == nil {
-		return []string{dimStyle.Render("ffprobe cannot read this file; see the Metadata tab.")}
+		note := st.note
+		if note == "" {
+			note = "ffprobe cannot read this file; see the Metadata tab."
+		}
+		return []string{dimStyle.Render(note)}
 	}
 	info := st.info
 	lines := []string{boldStyle.Render(info.FileName), ""}

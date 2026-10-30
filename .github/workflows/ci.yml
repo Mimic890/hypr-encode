@@ -17,8 +17,25 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Install media tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg mkvtoolnix libimage-exiftool-perl
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mkvtoolnix libimage-exiftool-perl libraw-bin
+      # Ubuntu's FFmpeg 6.1 cannot read tiled HEIF; the RAW and HEIF tests need 7.1+.
+      # BtbN keeps only the newest release branches, so a 404 here means: bump the version.
+      - name: Install FFmpeg 8.1 (static)
+        run: |
+          curl -fsSL -o /tmp/ffmpeg.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
+          mkdir -p "$HOME/ffmpeg" && tar -xJf /tmp/ffmpeg.tar.xz -C "$HOME/ffmpeg" --strip-components=1
+          echo "$HOME/ffmpeg/bin" >> "$GITHUB_PATH"
+      - run: ffmpeg -version | head -1
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/hypr-encode-testdata
+          key: testdata-v1
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
+      - name: RAW and HEIF tests must run, not skip
+        shell: bash # -o pipefail, so a failing go test is not hidden by tee
+        run: |
+          go test -count=1 -v -run 'CameraRaw|TiledHEIF|TurnedHEIF' ./pkg/convert | tee /tmp/photo-tests.txt
+          ! grep -- '--- SKIP' /tmp/photo-tests.txt
       - run: go build ./...

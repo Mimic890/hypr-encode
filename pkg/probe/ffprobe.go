@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,8 +236,23 @@ func parseFFprobe(path string, fileSize int64, out []byte) (*MediaInfo, error) {
 	return info, nil
 }
 
-// IsMediaFile reports whether a file name has an audio, video or image extension ffprobe reads.
+// rawExts are camera RAW formats. ffprobe reads them only as thumbnails or not
+// at all, so their tags come from exiftool and convert decodes them with
+// LibRaw's dcraw_emu. DNG is included: ffmpeg decodes some DNGs, but without
+// white balance or tone.
+var rawExts = []string{
+	".3fr", ".arw", ".cr2", ".cr3", ".crw", ".dcr", ".dng", ".erf", ".iiq", ".kdc", ".mef", ".mos",
+	".mrw", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw", ".rw2", ".rwl", ".sr2", ".srf", ".srw", ".x3f",
+}
+
+// IsRaw reports whether a file name has a camera RAW extension.
+func IsRaw(name string) bool { return slices.Contains(rawExts, strings.ToLower(filepath.Ext(name))) }
+
+// IsMediaFile reports whether a file name has an audio, video, image or camera RAW extension.
 func IsMediaFile(name string) bool {
+	if IsRaw(name) {
+		return true
+	}
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".mkv", ".mp4", ".mov", ".avi", ".m4v", ".webm", ".wmv", ".mpg", ".mpeg",
 		".ts", ".m2ts", ".mts", ".vob", ".mxf", ".flv", ".ogv", ".3gp",

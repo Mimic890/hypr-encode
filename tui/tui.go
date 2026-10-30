@@ -60,6 +60,7 @@ var (
 type fileState struct {
 	info *probe.MediaInfo
 	meta *meta.FileMeta
+	note string // shown on the Info tab when ffprobe has nothing to say
 	err  error
 }
 
@@ -141,9 +142,17 @@ func (m model) loadCurrent() tea.Cmd {
 	ctx, et := m.ctx, m.et
 	return func() tea.Msg {
 		st := &fileState{}
-		pctx, cancel := context.WithTimeout(ctx, probe.DefaultTimeout)
-		st.info, st.err = probe.ScanFileContext(pctx, path)
-		cancel()
+		if probe.IsRaw(path) { // ffprobe reads at most a thumbnail
+			if et == nil {
+				st.note = "Camera RAW: exiftool needed to read its tags."
+				return loadedMsg{path, st}
+			}
+			st.note = "Camera RAW: its tags are on the Metadata tab."
+		} else {
+			pctx, cancel := context.WithTimeout(ctx, probe.DefaultTimeout)
+			st.info, st.err = probe.ScanFileContext(pctx, path)
+			cancel()
+		}
 		if fm, err := meta.Read(ctx, path, et); err == nil {
 			st.meta, st.err = fm, nil // exiftool may read images ffprobe cannot
 		} else if st.err == nil {

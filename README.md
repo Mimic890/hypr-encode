@@ -10,7 +10,7 @@ Every command has `--json` output with a versioned schema and documented exit co
 
 ## Install
 
-Requirements: Go 1.26+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits [ExifTool](https://exiftool.org/) for image metadata, and [LibRaw](https://www.libraw.org/download)'s `dcraw_emu` for camera RAW photos (`apt install libraw-bin`, or `bin/` of the LibRaw Windows zip). FFmpeg 7.1+ is needed for tiled HEIF/AVIF photos. `hypr-encode doctor` lists what is installed.
+Requirements: Go 1.26+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits [ExifTool](https://exiftool.org/) for image metadata, and [LibRaw](https://www.libraw.org/download)'s `dcraw_emu` for camera RAW photos (`apt install libraw-bin`, or `bin/` of the LibRaw Windows zip). Converting HEIF/AVIF photos needs FFmpeg 7.1+ and ExifTool. `hypr-encode doctor` lists what is installed.
 
 ```sh
 go install github.com/Mimic890/hypr-encode@latest
@@ -68,6 +68,8 @@ Output covers:
 - Still-image dimensions, pixel format, bit depth, and camera, lens, exposure and GPS tags
 
 For images, tags come from `exiftool` when it is installed (EXIF, IPTC, XMP, GPS and maker notes; one exiftool process serves the whole run) and from `ffprobe` otherwise.
+
+Camera RAW and DNG files (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF, SRW and other LibRaw formats) are listed in directory scans and in the TUI. ffprobe reads them at most as a thumbnail, so `info` skips it and shows the exiftool tags with format `raw`. Without exiftool a RAW file is still listed, with the note "exiftool needed to read the tags of camera RAW files" (`note` in JSON); the exit code does not change.
 
 ### convert
 
@@ -134,7 +136,11 @@ The template is taken from `--name-template`, else the preset's `outputTemplate`
 
 **Progress.** Text mode writes progress and per-file results to stderr: a live block on a terminal, finished files only otherwise. With `--json`, stdout carries JSON Lines (see below).
 
-**Photos.** ffmpeg reads JPEG, PNG, WebP, TIFF, BMP, GIF and single-image HEIC/HEIF/AVIF itself. Tiled HEIF/AVIF images, which include every iPhone photo, are stored as a grid of small tiles: ffmpeg 8.0 outputs only the first tile, so hypr-encode reads the grid with `ffprobe -show_stream_groups` (FFmpeg 7.1+) and stacks and crops the tiles itself. An output whose size differs from the grid is an error, never a single tile. ffmpeg 8.0 ignores the rotation of HEIF photos (`irot` and EXIF Orientation), so a rotated photo comes out unrotated. Camera RAW and DNG files (CR2, CR3, NEF, ARW, RAF, ORF, RW2, PEF, SRW and other LibRaw formats) are decoded by `dcraw_emu` with the camera white balance and piped to ffmpeg as 16-bit PPM; without it they fail with a clear error. Directory inputs and the TUI list only formats ffmpeg reads, so RAW files must be given by name. Image conversion does not carry over EXIF metadata.
+**Photos.** ffmpeg reads JPEG, PNG, WebP, TIFF, BMP, GIF and single-image HEIC/HEIF/AVIF itself. Tiled HEIF/AVIF images, which include every iPhone photo, are stored as a grid of small tiles: ffmpeg 8.0 outputs only the first tile, so hypr-encode reads the grid with `ffprobe -show_stream_groups` (FFmpeg 7.1+) and stacks and crops the tiles itself. An output whose size differs from the grid is an error, never a single tile.
+
+HEIF/AVIF rotation is read with exiftool, one call per file, because ffmpeg ignores it: the primary image's `irot` (counterclockwise quarter turns) and then `imir` (axis 0 swaps top and bottom, as in libheif and ffmpeg), or the EXIF Orientation when neither is present, never both. The output carries no rotation flag, so viewers do not turn it again. Without exiftool, HEIF/AVIF inputs fail with exit code 4.
+
+Camera RAW and DNG files are decoded by `dcraw_emu` with the camera white balance and piped to ffmpeg as 16-bit PPM; without it they fail with exit code 4. Image conversion does not carry over EXIF metadata.
 
 ### preset
 
@@ -328,7 +334,7 @@ The stream objects are abbreviated above; the full field list is in [`testdata/i
 
 `meta get --json` prints `{"schemaVersion":1,"files":[{"path","tags","tracks":[{"index","selector","type","codec","default","forced","tags"}],"groups":{...}}],"errors":[...]}`; `groups` appears only when exiftool read the file. `meta set|rm --json` prints `{"schemaVersion":1,"results":[{"path","output","backend","command"}],"errors":[...]}`, where `command` is set with `--dry-run`. See [`testdata/meta-get.golden`](testdata/meta-get.golden) and [`testdata/meta-edit.golden`](testdata/meta-edit.golden).
 
-In `info --json`, image files carry an `exif` object with the same groups, and every track has `default` and `tags`.
+In `info --json`, image files carry an `exif` object with the same groups, and every track has `default` and `tags`. A file with missing details carries a `note`.
 
 `convert --dry-run --json` prints `{"schemaVersion":1,"jobs":[{"jobId","input","output","preset","load","threads","decoder":[...],"command":["ffmpeg",...]}]}`, where `decoder` is the `dcraw_emu` command whose output the ffmpeg command reads, set only for camera RAW; see [`testdata/convert-dry-run.golden`](testdata/convert-dry-run.golden). The command shows the final output path; the real run writes to a temp file first.
 
@@ -360,7 +366,7 @@ go test ./...
 go build ./...
 ```
 
-Integration tests generate tiny media files with `ffmpeg -f lavfi` and are skipped when the needed tool is missing. Regenerate golden files with `go test . -update`. Tests point `XDG_CONFIG_HOME` and `HOME` at temp dirs, so they never touch your presets.
+Integration tests generate tiny media files with `ffmpeg -f lavfi` and are skipped when the needed tool is missing. Photo tests use real files (camera RAW from raw.pixls.us, HEIF conformance files, a libavif tiled AVIF and an iPhone photo), downloaded once into the user cache directory (`hypr-encode-testdata`) and skipped offline. CI installs FFmpeg 8.1 (static), LibRaw, ExifTool and MKVToolNix and fails if those photo tests are skipped. Regenerate golden files with `go test . -update`. Tests point `XDG_CONFIG_HOME` and `HOME` at temp dirs, so they never touch your presets.
 
 ## License
 

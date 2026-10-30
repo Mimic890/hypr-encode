@@ -223,3 +223,17 @@ func TestScrolledKeepsCurrentVisible(t *testing.T) {
 		t.Fatalf("clamped = %v", got)
 	}
 }
+
+func TestRawFileListedWithoutExifTool(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "shot.CR3"), []byte("not decoded"), 0o600)
+	t.Setenv("PATH", t.TempDir())
+	m := newTestModel(t, dir)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, cmd := press(m, "down")
+	m = drain(t, m, cmd)
+	view := ansi.Strip(m.(model).render())
+	if !strings.Contains(view, "shot.CR3") || !strings.Contains(view, "exiftool needed") {
+		t.Fatalf("view:\n%s", view)
+	}
+}

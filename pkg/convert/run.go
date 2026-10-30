@@ -134,7 +134,8 @@ func Run(ctx context.Context, job Job, threads int, onProgress func(Progress)) (
 		return fmt.Errorf("ffmpeg failed on %q: %s", filepath.Base(job.Input), ffmpegError(stderr.String(), err))
 	}
 	if src.Grid != nil {
-		if err := checkGridSize(ctx, tmp, src.Grid); err != nil {
+		w, h := src.size()
+		if err := checkGridSize(ctx, tmp, w, h); err != nil {
 			return fmt.Errorf("%s: %w", filepath.Base(job.Input), err)
 		}
 	}
@@ -143,12 +144,11 @@ func Run(ctx context.Context, job Job, threads int, onProgress func(Progress)) (
 
 // checkGridSize refuses an output whose size differs from the tile grid's,
 // so a single tile is never passed off as the whole image.
-func checkGridSize(ctx context.Context, output string, g *probe.TileGrid) error {
+func checkGridSize(ctx context.Context, output string, w, h int) error {
 	info, err := probe.ScanFileContext(ctx, output)
 	if err != nil {
 		return err
 	}
-	w, h := g.DisplaySize()
 	if len(info.Video) == 0 || info.Video[0].Width != w || info.Video[0].Height != h {
 		got := "no image"
 		if len(info.Video) > 0 {

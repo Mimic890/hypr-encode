@@ -1,8 +1,11 @@
 package convert
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,14 +77,16 @@ func TestBuildArgsImageSources(t *testing.T) {
 	jpeg := builtin(t, "jpeg")
 	raw := Source{Path: "pipe:0", Decoder: []string{"dcraw_emu", "-w", "-6", "-Z", "-", "/p/a.cr3"}}
 	grid := &probe.TileGrid{Width: 1440, Height: 960, Tiles: []probe.Tile{{Stream: 0, X: 0, Y: 0}, {Stream: 1, X: 1280, Y: 0}, {Stream: 2, X: 0, Y: 720}, {Stream: 3, X: 1280, Y: 720}}}
-	rotated := &probe.TileGrid{Width: 640, Height: 360, CropX: 2, CropY: 4, Rotation: -90, Tiles: []probe.Tile{{Stream: 5, X: 0, Y: 0}}}
+	tile := &probe.TileGrid{Width: 640, Height: 360, CropX: 2, CropY: 4, Tiles: []probe.Tile{{Stream: 5, X: 0, Y: 0}}}
 	tests := []struct {
 		src  Source
 		want string
 	}{
 		{raw, "-f ppm_pipe -i pipe:0 -map 0:v:0 -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
-		{Source{Path: "a.heic", Grid: grid}, "-i a.heic -filter_complex [0:0][0:1][0:2][0:3]xstack=inputs=4:layout=0_0|1280_0|0_720|1280_720,crop=1440:960:0:0[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
-		{Source{Path: "a.heic", Grid: rotated}, "-i a.heic -filter_complex [0:5]null,crop=640:360:2:4,transpose=clock[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+		{Source{Path: "a.heic", Grid: grid}, "-noautorotate -i a.heic -filter_complex [0:0][0:1][0:2][0:3]xstack=inputs=4:layout=0_0|1280_0|0_720|1280_720,crop=1440:960:0:0[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+		{Source{Path: "a.heic", Grid: tile, Turn: "transpose=cclock,vflip"}, "-noautorotate -i a.heic -filter_complex [0:5]null,crop=640:360:2:4,transpose=cclock,vflip[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+		{Source{Path: "a.heic", Turn: "hflip,vflip"}, "-noautorotate -i a.heic -filter_complex [0:v:0]null,hflip,vflip[img] -map [img] -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
+		{Source{Path: "a.heic"}, "-i a.heic -map 0:v:0 -c copy -c:V mjpeg -q:V 2 -frames:v 1 -update 1 out.jpg"},
 	}
 	for _, test := range tests {
 		args, err := BuildArgs(jpeg, test.src, "out.jpg", 0)
@@ -89,8 +94,8 @@ func TestBuildArgsImageSources(t *testing.T) {
 			t.Errorf("%s:\n got %s (%v)\nwant %s", test.src.Path, got, err, head+test.want)
 		}
 	}
-	if w, h := rotated.DisplaySize(); w != 360 || h != 640 {
-		t.Errorf("rotated DisplaySize = %dx%d", w, h)
+	if w, h := (Source{Grid: tile, Turn: "transpose=clock"}).size(); w != 360 || h != 640 {
+		t.Errorf("turned size = %dx%d", w, h)
 	}
 }
 
@@ -392,8 +397,12 @@ func TestOpenRawWithoutDcrawEmu(t *testing.T) {
 
 // convertImage runs the jpeg preset on in and returns the output size.
 func convertImage(t *testing.T, in string) (int, int) {
+	w, h, _ := convertImageTo(t, in, filepath.Join(t.TempDir(), "out.jpg"))
+	return w, h
+}
+
+func convertImageTo(t *testing.T, in, out string) (int, int, string) {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "out.jpg")
 	if err := Run(context.Background(), Job{Input: in, Output: out, Preset: builtin(t, "jpeg")}, 0, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +411,7 @@ func convertImage(t *testing.T, in string) (int, int) {
 		t.Fatalf("output = %+v, %v", info, err)
 	}
 	assertNoTempFiles(t, filepath.Dir(out))
-	return info.Video[0].Width, info.Video[0].Height
+	return info.Video[0].Width, info.Video[0].Height, out
 }
 
 func TestConvertCameraRaw(t *testing.T) {
@@ -425,22 +434,97 @@ func TestConvertTiledHEIF(t *testing.T) {
 	if out, _ := exec.Command("ffprobe", "-h").CombinedOutput(); !strings.Contains(string(out), "show_stream_groups") {
 		t.Skip("ffprobe is older than 7.1")
 	}
+	if _, err := exec.LookPath("exiftool"); err != nil {
+		t.Skip("exiftool not installed")
+	}
 	base := "https://github.com/nokiatech/heif_conformance/raw/master/conformance_files/"
-	for name, size := range map[string][2]int{
-		"C007.heic": {2560, 1440}, // 2x2 tiles
-		"C022.heic": {1440, 960},  // 2x2 tiles of 1280x720, cropped
+	for url, size := range map[string][2]int{
+		base + "C007.heic": {2560, 1440}, // 2x2 tiles
+		base + "C022.heic": {1440, 960},  // 2x2 tiles of 1280x720, cropped
+		"https://github.com/AOMediaCodec/libavif/raw/main/tests/data/sofa_grid1x5_420.avif": {1024, 770}, // 5 AV1 tiles of 1024x154
 	} {
-		if w, h := convertImage(t, testmedia.Fetch(t, base+name)); w != size[0] || h != size[1] {
-			t.Errorf("%s: %dx%d, want %dx%d", name, w, h, size[0], size[1])
+		if w, h := convertImage(t, testmedia.Fetch(t, url)); w != size[0] || h != size[1] {
+			t.Errorf("%s: %dx%d, want %dx%d", filepath.Base(url), w, h, size[0], size[1])
 		}
 	}
 
 	// A result smaller than the grid is an error, never a single tile.
 	small := testmedia.Generate(t, "small.jpg")
-	err := checkGridSize(context.Background(), small, &probe.TileGrid{Width: 2560, Height: 1440})
+	err := checkGridSize(context.Background(), small, 2560, 1440)
 	if err == nil || !strings.Contains(err.Error(), "64x48") {
 		t.Fatalf("checkGridSize() = %v", err)
 	}
+}
+
+func TestOpenHEIFWithoutExifTool(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if _, err := Open(context.Background(), "photo.heic"); !errors.Is(err, tools.ErrMissing) || !strings.Contains(err.Error(), "rotation") {
+		t.Fatalf("Open() = %v, want a missing exiftool error", err)
+	}
+}
+
+func TestConvertTurnedHEIF(t *testing.T) {
+	testmedia.Generate(t, "skip-without-ffmpeg.wav")
+	if out, _ := exec.Command("ffprobe", "-h").CombinedOutput(); !strings.Contains(string(out), "show_stream_groups") {
+		t.Skip("ffprobe is older than 7.1")
+	}
+	if _, err := exec.LookPath("exiftool"); err != nil {
+		t.Skip("exiftool not installed")
+	}
+	base := "https://github.com/nokiatech/heif_conformance/raw/master/conformance_files/"
+	tests := []struct {
+		path, turn string
+		w, h       int
+	}{
+		{testmedia.Fetch(t, base+"C008.heic"), "transpose=cclock", 720, 1280}, // irot 90° counterclockwise
+		{testmedia.Fetch(t, base+"C014.heic"), "transpose=cclock", 720, 1280}, // irot of the primary item, not of the other one
+		{testmedia.Fetch(t, base+"C039.heic"), "transpose=cclock", 720, 1280},
+		{testmedia.Fetch(t, base+"C042.heic"), "vflip", 1280, 720}, // imir axis 0; ffmpeg alone would flip it too
+		{iPhoneHEIC(t), "hflip,vflip", 4032, 3024},                 // 48 tiles, EXIF Orientation 3, no irot
+	}
+	for _, test := range tests {
+		name := filepath.Base(test.path)
+		src, err := Open(context.Background(), test.path)
+		if err != nil || src.Turn != test.turn {
+			t.Errorf("%s: Turn = %q, %v; want %q", name, src.Turn, err, test.turn)
+			continue
+		}
+		w, h, out := convertImageTo(t, test.path, filepath.Join(t.TempDir(), "out.jpg"))
+		if w != test.w || h != test.h {
+			t.Errorf("%s: %dx%d, want %dx%d", name, w, h, test.w, test.h)
+		}
+		// A rotation flag left in the output would make viewers turn the photo again.
+		flags, err := exec.Command("exiftool", "-s", "-n", "-Orientation", "-Rotation", "-Mirroring", out).Output()
+		if err != nil || len(bytes.TrimSpace(flags)) > 0 {
+			t.Errorf("%s: output keeps rotation tags %q (%v)", name, flags, err)
+		}
+	}
+}
+
+// iPhoneHEIC returns an iPhone 13 photo shared in a heic-convert issue; GitHub
+// only accepts it zipped.
+func iPhoneHEIC(t *testing.T) string {
+	t.Helper()
+	zipPath := testmedia.Fetch(t, "https://github.com/catdad-experiments/heic-convert/files/9575534/heic.heic.zip")
+	z, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer z.Close()
+	r, err := z.File[0].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	path := filepath.Join(t.TempDir(), "iphone13.heic")
+	data, err := io.ReadAll(r)
+	if err == nil {
+		err = os.WriteFile(path, data, 0o600)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestFailFastCancelsRemainingJobs(t *testing.T) {

@@ -47,8 +47,7 @@ type FileMeta struct {
 
 var imageExts = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".tif": true, ".tiff": true,
-	".heic": true, ".heif": true, ".avif": true, ".gif": true, ".dng": true, ".cr2": true,
-	".cr3": true, ".nef": true, ".arw": true, ".raf": true, ".orf": true, ".rw2": true,
+	".heic": true, ".heif": true, ".avif": true, ".gif": true,
 }
 
 // quickTimeExts are video containers exiftool can also write.
@@ -59,7 +58,7 @@ var matroskaExts = map[string]bool{".mkv": true, ".mka": true, ".mks": true, ".m
 func ext(path string) string { return strings.ToLower(filepath.Ext(path)) }
 
 // IsImage reports whether path has a still-image extension; images are handled by exiftool.
-func IsImage(path string) bool { return imageExts[ext(path)] }
+func IsImage(path string) bool { return imageExts[ext(path)] || probe.IsRaw(path) }
 
 // ReadsExif reports whether Read lists exiftool tag groups for path.
 func ReadsExif(path string) bool { return IsImage(path) || quickTimeExts[ext(path)] }

@@ -238,6 +238,30 @@ type infoDoc struct {
 type infoFile struct {
 	*probe.MediaInfo
 	Exif map[string]map[string]any `json:"exif,omitempty"`
+	Note string                    `json:"note,omitempty"` // why some details are missing
+}
+
+// rawInfo describes a camera RAW file, which ffprobe cannot read, by its exiftool tags.
+func rawInfo(path string, et *meta.ExifTool) (infoFile, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return infoFile{}, err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return infoFile{}, err
+	}
+	file := infoFile{MediaInfo: &probe.MediaInfo{
+		FilePath: abs, FileName: filepath.Base(path), FileSize: fi.Size(),
+		Format: "raw", FormatLong: "Camera RAW",
+		Tags: map[string]string{}, Video: []probe.VideoStream{}, Audio: []probe.AudioStream{}, Subtitle: []probe.SubStream{},
+	}}
+	if et == nil {
+		file.Note = "exiftool needed to read the tags of camera RAW files"
+		return file, nil
+	}
+	file.Exif, err = et.ReadGroups(abs)
+	return file, err
 }
 
 type itemError struct {
@@ -295,9 +319,17 @@ func (a *app) info(ctx context.Context, args []string) error {
 		fmt.Fprintln(w)
 	}
 	for _, path := range paths {
-		pctx, cancel := context.WithTimeout(ctx, probe.DefaultTimeout)
-		info, err := probe.ScanFileContext(pctx, path)
-		cancel()
+		var file infoFile
+		if probe.IsRaw(path) {
+			file, err = rawInfo(path, et)
+		} else {
+			pctx, cancel := context.WithTimeout(ctx, probe.DefaultTimeout)
+			file.MediaInfo, err = probe.ScanFileContext(pctx, path)
+			cancel()
+			if err == nil && et != nil && isImageFile(file.MediaInfo) {
+				file.Exif, _ = et.ReadGroups(file.FilePath) // on failure the ffprobe tags remain
+			}
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -306,18 +338,19 @@ func (a *app) info(ctx context.Context, args []string) error {
 			report(doc.Errors[len(doc.Errors)-1])
 			continue
 		}
-		file := infoFile{MediaInfo: info}
-		if et != nil && isImageFile(info) {
-			file.Exif, _ = et.ReadGroups(info.FilePath) // on failure the ffprobe tags remain
-		}
 		doc.Files = append(doc.Files, file)
-		shown := withExifTags(info, file.Exif)
+		shown := withExifTags(file.MediaInfo, file.Exif)
 		switch {
 		case a.json:
 		case detail:
 			printFileInfo(w, shown)
 		default:
 			printFileCard(w, shown, termWidth(), len(doc.Files))
+		}
+		if file.Note != "" && !a.json {
+			fmt.Fprintf(w, "  %s%s%s\n", anGray, file.Note, anReset)
+		}
+		if !a.json && !detail {
 			fmt.Fprintln(w)
 		}
 	}

@@ -8,26 +8,39 @@ import (
 
 // BuildArgs returns the ffmpeg arguments (without the program name) that
 // convert src to output with preset p. threads > 0 sets the CPU thread budget.
-// A tile grid replaces the preset's track selection with the stacked image.
+// A tile grid or a turn replaces the preset's track selection with the image.
 func BuildArgs(p Preset, src Source, output string, threads int) ([]string, error) {
 	args := []string{"-hide_banner", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats"}
 	args = append(args, p.InputArgs...)
 	if src.Decoder != nil {
 		args = append(args, "-f", "ppm_pipe")
 	}
+	if src.Grid != nil || src.Turn != "" {
+		args = append(args, "-noautorotate") // Turn already holds the whole rotation
+	}
 	if threads > 0 {
 		args = append(args, "-threads", strconv.Itoa(threads)) // decoder threads
 	}
 	args = append(args, "-i", src.Path)
 
+	image := "" // filters that build the image from a HEIF/AVIF source
 	switch {
 	case src.Grid != nil:
-		args = append(args, "-filter_complex", gridFilter(src.Grid), "-map", "[img]")
+		image = gridFilter(src.Grid)
+	case src.Turn != "":
+		image = "[0:v:0]null"
+	}
+	switch {
+	case image != "":
+		if src.Turn != "" {
+			image += "," + src.Turn
+		}
+		args = append(args, "-filter_complex", image+"[img]", "-map", "[img]")
 	case len(p.Tracks) == 0:
 		args = append(args, "-map", "0")
 	}
 	for _, sel := range p.Tracks {
-		if src.Grid != nil {
+		if image != "" {
 			break
 		}
 		m, err := mapArg(sel)
