@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
 // ── Output types ──────────────────────────────────────────────────────────────
@@ -65,61 +67,68 @@ type HDRInfo struct {
 
 // VideoStream describes one video track inside a file.
 type VideoStream struct {
-	Index         int     `json:"index"`
-	Codec         string  `json:"codec"`
-	CodecLong     string  `json:"codecLong"`
-	Profile       string  `json:"profile"`
-	Level         int     `json:"level"`
-	Width         int     `json:"width"`
-	Height        int     `json:"height"`
-	FPS           float64 `json:"fps"`
-	NbFrames      int64   `json:"nbFrames"`
-	PixFmt        string  `json:"pixFmt"`
-	BitDepth      int     `json:"bitDepth"`
-	BitrateBps    int64   `json:"bitrateBps"`
-	SizeBytes     int64   `json:"sizeBytes"`
-	ColorRange    string  `json:"colorRange"`
-	Language      string  `json:"language"`
-	Title         string  `json:"title"`
-	HDR           HDRInfo `json:"hdr"`
-	IsAttachedPic bool    `json:"isAttachedPic"` // true for cover art embedded in audio files
+	Index         int               `json:"index"`
+	Codec         string            `json:"codec"`
+	CodecLong     string            `json:"codecLong"`
+	Profile       string            `json:"profile"`
+	Level         int               `json:"level"`
+	Width         int               `json:"width"`
+	Height        int               `json:"height"`
+	FPS           float64           `json:"fps"`
+	NbFrames      int64             `json:"nbFrames"`
+	PixFmt        string            `json:"pixFmt"`
+	BitDepth      int               `json:"bitDepth"`
+	BitrateBps    int64             `json:"bitrateBps"`
+	SizeBytes     int64             `json:"sizeBytes"`
+	ColorRange    string            `json:"colorRange"`
+	Language      string            `json:"language"`
+	Title         string            `json:"title"`
+	HDR           HDRInfo           `json:"hdr"`
+	IsAttachedPic bool              `json:"isAttachedPic"` // true for cover art embedded in audio files
+	Default       bool              `json:"default"`
+	Tags          map[string]string `json:"tags"`
 }
 
 // AudioStream describes one audio track inside a file.
 type AudioStream struct {
-	Index         int    `json:"index"`
-	Codec         string `json:"codec"`
-	CodecLong     string `json:"codecLong"`
-	Profile       string `json:"profile"`
-	Channels      int    `json:"channels"`
-	ChannelLayout string `json:"channelLayout"`
-	SampleRate    int    `json:"sampleRate"`
-	BitrateBps    int64  `json:"bitrateBps"`
-	SizeBytes     int64  `json:"sizeBytes"`
-	Language      string `json:"language"`
-	Title         string `json:"title"`
-	IsAtmos       bool   `json:"isAtmos"`
-	IsDTSX        bool   `json:"isDtsX"`
+	Index         int               `json:"index"`
+	Codec         string            `json:"codec"`
+	CodecLong     string            `json:"codecLong"`
+	Profile       string            `json:"profile"`
+	Channels      int               `json:"channels"`
+	ChannelLayout string            `json:"channelLayout"`
+	SampleRate    int               `json:"sampleRate"`
+	BitrateBps    int64             `json:"bitrateBps"`
+	SizeBytes     int64             `json:"sizeBytes"`
+	Language      string            `json:"language"`
+	Title         string            `json:"title"`
+	IsAtmos       bool              `json:"isAtmos"`
+	IsDTSX        bool              `json:"isDtsX"`
+	Default       bool              `json:"default"`
+	Tags          map[string]string `json:"tags"`
 }
 
 // SubStream describes one subtitle track inside a file.
 type SubStream struct {
-	Index      int    `json:"index"`
-	Codec      string `json:"codec"`
-	Language   string `json:"language"`
-	Title      string `json:"title"`
-	Forced     bool   `json:"forced"`
-	BitrateBps int64  `json:"bitrateBps"`
-	SizeBytes  int64  `json:"sizeBytes"`
+	Index      int               `json:"index"`
+	Codec      string            `json:"codec"`
+	Language   string            `json:"language"`
+	Title      string            `json:"title"`
+	Forced     bool              `json:"forced"`
+	BitrateBps int64             `json:"bitrateBps"`
+	SizeBytes  int64             `json:"sizeBytes"`
+	Default    bool              `json:"default"`
+	Tags       map[string]string `json:"tags"`
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-const defaultTimeout = 30 * time.Second
+// DefaultTimeout bounds one ffprobe run.
+const DefaultTimeout = 30 * time.Second
 
 // ScanFile runs ffprobe on a local file and returns full media information.
 func ScanFile(path string) (*MediaInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
 	return ScanFileContext(ctx, path)
 }
@@ -152,7 +161,7 @@ func ScanFileContext(ctx context.Context, path string) (*MediaInfo, error) {
 			return nil, fmt.Errorf("ffprobe %q: %w", filepath.Base(path), ctx.Err())
 		}
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("ffprobe not found in PATH; install ffmpeg: %w", err)
+			return nil, &tools.MissingError{Name: "ffprobe"}
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -179,6 +188,9 @@ func parseFFprobe(path string, fileSize int64, out []byte) (*MediaInfo, error) {
 		FormatLong: raw.Format.FormatLongName,
 		Chapters:   len(raw.Chapters),
 		Tags:       raw.Format.Tags,
+		Video:      []VideoStream{},
+		Audio:      []AudioStream{},
+		Subtitle:   []SubStream{},
 	}
 	if info.Tags == nil {
 		info.Tags = map[string]string{}
@@ -223,6 +235,20 @@ func parseFFprobe(path string, fileSize int64, out []byte) (*MediaInfo, error) {
 	return info, nil
 }
 
+// IsMediaFile reports whether a file name has an audio, video or image extension ffprobe reads.
+func IsMediaFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".mkv", ".mp4", ".mov", ".avi", ".m4v", ".webm", ".wmv", ".mpg", ".mpeg",
+		".ts", ".m2ts", ".mts", ".vob", ".mxf", ".flv", ".ogv", ".3gp",
+		".mp3", ".flac", ".aac", ".opus", ".ogg", ".oga", ".wav", ".m4a",
+		".aiff", ".aif", ".ape", ".wma", ".alac", ".ac3", ".dts",
+		".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
+		".avif", ".heic", ".heif":
+		return true
+	}
+	return false
+}
+
 // ── Stream parsers ────────────────────────────────────────────────────────────
 
 func parseVideoStream(s rawStream) VideoStream {
@@ -258,6 +284,7 @@ func parseVideoStream(s rawStream) VideoStream {
 	}
 	vs.HDR = detectHDR(s)
 	vs.IsAttachedPic = s.Disposition.AttachedPic == 1
+	vs.Default, vs.Tags = s.Disposition.Default == 1, tagsOrEmpty(s.Tags)
 	return vs
 }
 
@@ -294,7 +321,7 @@ func parseAudioStream(s rawStream) AudioStream {
 		(strings.Contains(profileUp, "DTS:X") || strings.Contains(profileUp, "DTS-X")) {
 		as.IsDTSX = true
 	}
-
+	as.Default, as.Tags = s.Disposition.Default == 1, tagsOrEmpty(s.Tags)
 	return as
 }
 
@@ -308,6 +335,7 @@ func parseSubStream(s rawStream) SubStream {
 	}
 	ss.BitrateBps = tagInt64Prefix(s.Tags, "BPS")
 	ss.SizeBytes = tagInt64Prefix(s.Tags, "NUMBER_OF_BYTES")
+	ss.Default, ss.Tags = s.Disposition.Default == 1, tagsOrEmpty(s.Tags)
 	return ss
 }
 
@@ -493,6 +521,14 @@ func bitDepthFromPixFmt(pix string) int {
 	return 0
 }
 
+// tagsOrEmpty keeps JSON output stable: tags are an object, never null.
+func tagsOrEmpty(tags map[string]string) map[string]string {
+	if tags == nil {
+		return map[string]string{}
+	}
+	return tags
+}
+
 func validStreamSize(size, fileSize int64) int64 {
 	if size <= 0 || fileSize > 0 && size > fileSize {
 		return 0
@@ -539,6 +575,7 @@ type rawStream struct {
 }
 
 type rawDisposition struct {
+	Default     int `json:"default"`
 	Forced      int `json:"forced"`
 	AttachedPic int `json:"attached_pic"`
 }

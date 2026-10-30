@@ -57,3 +57,12 @@ func TestResolveMetaIsCaseInsensitive(t *testing.T) {
 		t.Fatalf("resolveMeta() = %v", rows)
 	}
 }
+
+func TestFramelessWriter(t *testing.T) {
+	var buf strings.Builder
+	w := &framelessWriter{w: &buf}
+	w.Write([]byte("\n  ╭──╮\n  │ a │\n  ╰── ─ #1 ──╯\n"))
+	if got, want := buf.String(), "\n    a\n        #1\n"; got != want {
+		t.Fatalf("framelessWriter = %q, want %q", got, want)
+	}
+}

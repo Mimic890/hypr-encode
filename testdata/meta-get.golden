@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    {
+      "path": "/media/demo.mkv",
+      "tags": {
+        "title": "Demo"
+      },
+      "tracks": [
+        {
+          "index": 0,
+          "selector": "v:0",
+          "type": "video",
+          "codec": "hevc",
+          "default": true,
+          "forced": false,
+          "tags": {}
+        },
+        {
+          "index": 1,
+          "selector": "s:0",
+          "type": "subtitle",
+          "codec": "subrip",
+          "default": false,
+          "forced": true,
+          "tags": {
+            "language": "rus"
+          }
+        }
+      ]
+    },
+    {
+      "path": "/media/photo.jpg",
+      "tags": {},
+      "tracks": [],
+      "groups": {
+        "IFD0": {
+          "Artist": "Ann"
+        },
+        "XMP-dc": {
+          "Title": "Sunset"
+        }
+      }
+    }
+  ],
+  "errors": []
+}

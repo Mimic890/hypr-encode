@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "ffprobe",
+      "found": true,
+      "path": "/usr/bin/ffprobe",
+      "version": "7.1"
+    },
+    {
+      "name": "mkvpropedit",
+      "found": false,
+      "error": "mkvpropedit not found in PATH; install MKVToolNix"
+    }
+  ],
+  "gpuPresets": [
+    {
+      "name": "hevc-nvenc",
+      "encoder": "hevc_nvenc",
+      "ok": true
+    },
+    {
+      "name": "hevc-amf",
+      "encoder": "hevc_amf",
+      "ok": false,
+      "error": "encoder hevc_amf is not included in this ffmpeg build"
+    }
+  ]
+}
