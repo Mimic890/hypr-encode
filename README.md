@@ -75,7 +75,7 @@ For images, tags come from `exiftool` when it is installed (EXIF, IPTC, XMP, GPS
 hypr-encode convert [flags] <input...> -o <output>
 ```
 
-Inputs are files or directories (their media files, non-recursive). With one input file, `-o` is the output file. With several inputs, a directory input, an existing directory, or a path ending in `/`, `-o` is an output directory: each output is named after its input with the preset's container as extension. The directory is created if needed.
+Inputs are files or directories (their media files, non-recursive). With one input file, `-o` is the output file. With several inputs, a directory input, an existing directory, or a path ending in `/`, `-o` is an output directory: each output is named after its input (see [Output names](#output-names)) with the preset's container as extension. The directory is created if needed.
 
 | Flag | Meaning |
 | --- | --- |
@@ -89,17 +89,39 @@ Inputs are files or directories (their media files, non-recursive). With one inp
 | `--track SEL` | Track to keep (repeatable): `all`, stream index `N`, `v`, `a`, `s`, `t`, `TYPE:N`, `TYPE:all`. Default: all tracks |
 | `--container EXT` | Output extension for directory output |
 | `--load CLASS` | Load class: `cpu-heavy`, `light`, `gpu`, `io` |
+| `--name-template T` | Output name template for directory output, applied in any directory (see below) |
 | `--ffmpeg-arg ARG` | Extra raw ffmpeg output argument (repeatable) |
 | `-j N`, `--jobs N` | Parallel jobs: a number or `auto` (default) |
 | `--fail-fast` | Cancel the remaining jobs after the first failure |
-| `--overwrite` | Replace existing outputs, including the input itself |
+| `--on-conflict P` | When an output exists: `fail`, `overwrite` or `increment`. Default from `config.yml`, else `fail` |
+| `--overwrite` | Same as `--on-conflict overwrite` |
 | `--dry-run` | Print the ffmpeg commands and exit |
 
 Without `--preset`, every track is copied (`-c copy`) and only the given flags change that. `--crf` maps to `-crf` (x264, x265, SVT-AV1, libaom, VP9), `-cq` (NVENC), `-global_quality` (QSV), `-qp` (VAAPI), `-qp_i`/`-qp_p` (AMF), `-quality` (WebP) or `-q` (JPEG, LAME); other encoders reject it.
 
 Video encoders apply to video tracks only; attached pictures (cover art), attachments and other tracks are copied. Global metadata and chapters are kept by ffmpeg's defaults.
 
-**Safety.** ffmpeg writes to a hidden temp file next to the output (`.name.*.part.ext`), which is renamed into place only after success. An existing output, including the input itself, is replaced only with `--overwrite`. ffmpeg runs without a shell and without stdin. Ctrl+C stops every running job, removes their temp files and exits with 130. Conversions have no timeout.
+**Safety.** ffmpeg writes to a hidden temp file next to the output (`.name.*.part.ext`), which is renamed into place only after success. An existing output is replaced only with `--on-conflict overwrite` (or `--overwrite`). An output that would replace its own input is always an error. ffmpeg runs without a shell and without stdin. Ctrl+C stops every running job, removes their temp files and exits with 130. Conversions have no timeout.
+
+#### Output names
+
+Outputs in a directory are named by a template. By default (`{name}.conv`, applied only when the output directory is the input's directory) `movie.mkv` converted next to itself becomes `movie.conv.mkv`, while `-o out/` keeps `out/movie.mkv`. The extension always comes from the preset's container, or the input's when the preset has none. A single input with an explicit output file (`-o new.mp4`) is not renamed.
+
+| Placeholder | Value |
+| --- | --- |
+| `{name}` | Input file name without extension |
+| `{preset}` | Preset name (`custom` without `--preset`) |
+| `{vcodec}`, `{acodec}` | Output codec, e.g. `hevc`, `opus` |
+| `{encoder}` | Encoder of the main stream with `lib` dropped, e.g. `x265`, `hevc_nvenc`, `opus`; `copy` when copied |
+| `{res}` | Video height, e.g. `1080p` |
+| `{bitdepth}` | Video bit depth, from `--pix-fmt` when set |
+| `{fps}` | Frame rate, e.g. `25`, `23.976` (empty for images) |
+| `{crf}` | Constant quality of the main stream |
+| `{date}` | Today, `YYYY-MM-DD` |
+
+Values describe the output; a copied track takes its value from the input (ffprobe). The template is split at dots, and a segment whose placeholder is empty is dropped: with `{name}.{encoder}.{bitdepth}bit.{fps}fps`, `file1.mkv` becomes `file1.x265.10bit.25fps.mkv` with `hevc`, and `song.opus.opus` with `opus` (no video, so the bit depth and fps segments go). `/`, `\` and control characters are removed from values. Values come from the first video and audio stream and ignore raw `--ffmpeg-arg` filters such as scaling.
+
+The template is taken from `--name-template`, else the preset's `outputTemplate`, else `config.yml`. With `--on-conflict increment`, an existing `file1.conv.mkv` makes the output `file1.conv.1.mkv`, then `file1.conv.2.mkv`. `--dry-run` and `--json` show the final names.
 
 **Parallel queue.** Every preset has a load class. With `--jobs auto`, each class has its own limit and jobs of different classes run side by side; a light job may start while a cpu-heavy job waits. With `--jobs N`, at most N jobs of any class run, in queue order. Each job gets `cores / limit` CPU threads (`-threads`, plus `pools` for x265 and `lp` for SVT-AV1). A failed job does not stop the others unless `--fail-fast` is set.
 
@@ -156,14 +178,19 @@ Both files live in the user config directory (`$XDG_CONFIG_HOME/hypr-encode/` or
   tracks: [v, a, "s:all"]        # default: all tracks
   inputArgs: [-hwaccel, cuda]    # raw args before -i
   args: [-movflags, +faststart]  # raw output args
+  outputTemplate: "{name}.{crf}" # replaces output.template of config.yml
 ```
 
-`config.yml` changes the automatic job limits:
+`config.yml` changes the automatic job limits and output naming (defaults shown for `output`):
 
 ```yaml
 jobs:
   cpu-heavy: 2
   gpu: 3
+output:
+  template: "{name}.conv"  # see Output names
+  apply: same-dir          # same-dir: only when writing into the input's directory | always
+  on_conflict: fail        # fail | overwrite | increment
 ```
 
 ### meta
@@ -235,7 +262,7 @@ Opens a full-screen interface in `dir` (default: the current directory): a file 
 
 **Metadata** lists container tags (or image tags by group) and every track with its tags. `enter` edits a value, `a` adds `KEY=VALUE` to the selected container or track, `d` deletes a tag, `t` and `f` toggle a track's default and forced flags, `u` drops all pending changes. Changes stay pending until `w`, which shows them with the exact commands; then `y` writes in place, `c` writes a `name.edited.ext` copy (an existing copy is never overwritten) and `esc` goes back. Moving to another file drops pending changes.
 
-**Convert** picks a preset with `←`/`→` (only presets usable on this machine) and overrides its fields with `enter`; an empty field keeps the preset value. `r` converts the marked files, or the selected one, into the output directory (default `converted/` under the starting directory) with the same queue as `convert`; existing outputs are never overwritten. Each job shows a progress bar, plus a total. `+` and `-` change the number of parallel jobs, `0` returns to automatic limits; a new count applies to jobs started afterwards. `x` stops the queue. `s` saves the current preset and overrides as a user preset that extends it.
+**Convert** picks a preset with `←`/`→` (only presets usable on this machine) and overrides its fields with `enter`; an empty field keeps the preset value. `r` shows the output names for the marked files, or the selected one, in the output directory (default `converted/` under the starting directory), flagging outputs that exist; `enter` starts the same queue as `convert`, `esc` goes back. `o` switches what happens to existing outputs (`fail`, `overwrite`, `increment`; the default comes from `config.yml`) and updates the names. Each job shows a progress bar, plus a total; `pgup`/`pgdn` scroll the list, which follows the running job. `+` and `-` change the number of parallel jobs, `0` returns to automatic limits; a new count applies to jobs started afterwards. `x` stops the queue. `s` saves the current preset and overrides as a user preset that extends it.
 
 ## Terminal output
 

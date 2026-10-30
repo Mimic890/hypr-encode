@@ -183,7 +183,11 @@ func (a *app) metaEdit(ctx context.Context, verb string, args []string) error {
 
 	outputs := make([]string, len(paths)) // "" means in place
 	if *out != "" {
-		jobs, err := convert.Plan(paths, *out, convert.Preset{}, *overwrite)
+		naming := convert.Naming{}
+		if *overwrite {
+			naming.OnConflict = convert.ConflictOverwrite
+		}
+		jobs, err := convert.Plan(paths, *out, convert.Preset{}, naming)
 		if err != nil {
 			return usageErr("meta %s: %v", verb, err)
 		}

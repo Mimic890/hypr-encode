@@ -33,7 +33,7 @@ type presetFlags struct {
 	fs                                     *flag.FlagSet
 	vcodec, acodec, scodec, vbitrate       string
 	abitrate, encPreset, pixFmt, container string
-	load                                   string
+	load, nameTemplate                     string
 	crf                                    int
 	tracks, rawArgs                        stringList
 }
@@ -50,6 +50,7 @@ func addPresetFlags(fs *flag.FlagSet) *presetFlags {
 	fs.StringVar(&f.pixFmt, "pix-fmt", "", "video pixel format, e.g. yuv420p10le")
 	fs.StringVar(&f.container, "container", "", "output extension when writing to a directory, e.g. mkv")
 	fs.StringVar(&f.load, "load", "", "load class: cpu-heavy, light, gpu or io")
+	fs.StringVar(&f.nameTemplate, "name-template", "", "output name template for directory output, e.g. {name}.{encoder}.{crf}")
 	fs.Var(&f.tracks, "track", "track to keep: all, N, v, a, s, t, TYPE:N or TYPE:all (repeatable; default all)")
 	fs.Var(&f.rawArgs, "ffmpeg-arg", "extra raw ffmpeg output argument (repeatable)")
 	return f
@@ -84,6 +85,8 @@ func (f *presetFlags) apply(p *convert.Preset, media string) {
 			p.Container = strings.TrimPrefix(f.container, ".")
 		case "load":
 			p.Load = f.load
+		case "name-template":
+			p.OutputTemplate = f.nameTemplate
 		case "track":
 			p.Tracks = f.tracks
 		case "ffmpeg-arg":
@@ -123,15 +126,21 @@ func (a *app) convert(ctx context.Context, args []string) error {
 	fs.StringVar(&jobsFlag, "jobs", "auto", "parallel jobs: a number or auto (per load class, see config.yml)")
 	fs.StringVar(&jobsFlag, "j", "auto", "shorthand for --jobs")
 	failFast := fs.Bool("fail-fast", false, "stop all jobs after the first failure")
-	overwrite := fs.Bool("overwrite", false, "replace existing output files, including the input itself")
+	onConflict := fs.String("on-conflict", "", "when an output exists: fail, overwrite or increment (default from config.yml, else fail)")
+	overwrite := fs.Bool("overwrite", false, "replace existing output files; same as --on-conflict overwrite")
 	dryRun := fs.Bool("dry-run", false, "print the ffmpeg commands without running them")
 	pf := addPresetFlags(fs)
 	paths, err := a.parseFlags(fs, args, "convert [flags] <input...> -o <output>")
 	if err != nil {
 		return err
 	}
-	if len(paths) == 0 || *out == "" {
+	switch {
+	case len(paths) == 0 || *out == "":
 		return usageErr("convert: need at least one input and -o <output>")
+	case *overwrite && *onConflict != "" && *onConflict != convert.ConflictOverwrite:
+		return usageErr("convert: --overwrite contradicts --on-conflict %s", *onConflict)
+	case *overwrite:
+		*onConflict = convert.ConflictOverwrite
 	}
 	jobs := 0
 	if jobsFlag != "auto" {
@@ -171,18 +180,26 @@ func (a *app) convert(ctx context.Context, args []string) error {
 	if len(inputs) == 0 {
 		return errors.New("no media files found in the given inputs")
 	}
-	planned, err := convert.Plan(inputs, *out, p, *overwrite)
+	cfgPath, err := configPath("config.yml")
+	if err != nil {
+		return err
+	}
+	cfg, err := convert.LoadConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	naming := cfg.Output
+	if *onConflict != "" {
+		naming.OnConflict = *onConflict
+	}
+	if pf.nameTemplate != "" {
+		naming.Apply = convert.ApplyAlways // an explicit template is never ignored
+	}
+	planned, err := convert.Plan(inputs, *out, p, naming)
 	if err != nil {
 		return usageErr("convert: %v", err)
 	}
-	limitsPath, err := configPath("config.yml")
-	if err != nil {
-		return err
-	}
-	limits, err := convert.LoadLimits(limitsPath)
-	if err != nil {
-		return err
-	}
+	limits := cfg.Jobs
 	cores := a.cores
 
 	if *dryRun {
@@ -230,7 +247,7 @@ func (a *app) convert(ctx context.Context, args []string) error {
 	}
 	if len(errs) == 1 && errs[0] != nil {
 		if errors.Is(errs[0], fsutil.ErrExists) {
-			return fmt.Errorf("%w; pass --overwrite to replace it", errs[0])
+			return fmt.Errorf("%w; pass --overwrite to replace it or --on-conflict increment to number it", errs[0])
 		}
 		return errs[0]
 	}

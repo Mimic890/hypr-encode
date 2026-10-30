@@ -166,19 +166,24 @@ func TestUserPresets(t *testing.T) {
 	}
 }
 
-func TestLoadLimits(t *testing.T) {
+func TestLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	limits, err := LoadLimits(path)
-	if err != nil || limits[LoadCPUHeavy] != 1 || limits[LoadGPU] != 2 {
-		t.Fatalf("defaults = %v, %v", limits, err)
+	cfg, err := LoadConfig(path)
+	if err != nil || cfg.Jobs[LoadCPUHeavy] != 1 || cfg.Jobs[LoadGPU] != 2 || cfg.Output != DefaultNaming() {
+		t.Fatalf("defaults = %+v, %v", cfg, err)
 	}
-	os.WriteFile(path, []byte("jobs:\n  cpu-heavy: 3\n"), 0o600)
-	if limits, err := LoadLimits(path); err != nil || limits[LoadCPUHeavy] != 3 || limits[LoadIO] != 2 {
-		t.Fatalf("limits = %v, %v", limits, err)
+	os.WriteFile(path, []byte("jobs:\n  cpu-heavy: 3\noutput:\n  on_conflict: increment\n"), 0o600)
+	cfg, err = LoadConfig(path)
+	if err != nil || cfg.Jobs[LoadCPUHeavy] != 3 || cfg.Jobs[LoadIO] != 2 || cfg.Output.OnConflict != ConflictIncrement || cfg.Output.Template != "{name}.conv" {
+		t.Fatalf("config = %+v, %v", cfg, err)
 	}
-	for _, bad := range []string{"jobs:\n  turbo: 1\n", "jobs:\n  io: 0\n", "job: {}\n"} {
+	for _, bad := range []string{
+		"jobs:\n  turbo: 1\n", "jobs:\n  io: 0\n", "job: {}\n",
+		"output:\n  apply: never\n", "output:\n  on_conflict: skip\n",
+		"output:\n  template: \"{name}.{size}\"\n", "output:\n  template: \"{name}/x\"\n", "output:\n  template: \"{name\"\n",
+	} {
 		os.WriteFile(path, []byte(bad), 0o600)
-		if _, err := LoadLimits(path); err == nil {
+		if _, err := LoadConfig(path); err == nil {
 			t.Errorf("%q must fail", bad)
 		}
 	}
@@ -187,20 +192,89 @@ func TestLoadLimits(t *testing.T) {
 func TestPlan(t *testing.T) {
 	dir := t.TempDir()
 	p := Preset{Container: "opus"}
-	jobs, err := Plan([]string{"a/x.flac", "b/y.mp3"}, dir, p, false)
+	jobs, err := Plan([]string{"a/x.flac", "b/y.mp3"}, dir, p, Naming{})
 	if err != nil || jobs[0].Output != filepath.Join(dir, "x.opus") || jobs[1].Output != filepath.Join(dir, "y.opus") || jobs[1].ID != 2 {
 		t.Fatalf("Plan() = %+v, %v", jobs, err)
 	}
-	if jobs, _ := Plan([]string{"x.mkv"}, "out.mp4", p, false); jobs[0].Output != "out.mp4" {
+	if jobs, _ := Plan([]string{"x.mkv"}, "out.mp4", p, Naming{}); jobs[0].Output != "out.mp4" {
 		t.Fatalf("single file output = %q", jobs[0].Output)
 	}
-	if jobs, _ := Plan([]string{"x.mkv"}, "new/", Preset{}, false); jobs[0].Output != filepath.Join("new", "x.mkv") {
+	if jobs, _ := Plan([]string{"x.mkv"}, "new/", Preset{}, Naming{}); jobs[0].Output != filepath.Join("new", "x.mkv") {
 		t.Fatalf("trailing slash output = %q", jobs[0].Output)
 	}
-	if _, err := Plan([]string{"a/x.flac", "b/x.wav"}, dir, p, false); err == nil {
+	if _, err := Plan([]string{"a/x.flac", "b/x.wav"}, dir, p, Naming{}); err == nil {
 		t.Fatal("colliding outputs must fail")
 	}
 }
+
+func TestPlanNameTemplate(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "x\\y\x07.mkv") // a backslash and a control char in the name are dropped
+	hevc := Preset{Name: "hevc", Container: "mkv", Video: Codec{Codec: "libx265", CRF: ptr(22)}}
+	n := Naming{Template: "{name}.{encoder}.crf{crf}.{preset}"}
+	jobs, err := Plan([]string{in}, dir+"/", hevc, n)
+	if err != nil || jobs[0].Output != filepath.Join(dir, "xy.x265.crf22.hevc.mkv") {
+		t.Fatalf("Plan() = %+v, %v", jobs, err)
+	}
+	// A copied stream has no crf, so its segment is dropped.
+	remux := Preset{Name: "remux", Container: "mkv", Video: Codec{Codec: "copy"}}
+	if jobs, _ := Plan([]string{in}, dir+"/", remux, n); jobs[0].Output != filepath.Join(dir, "xy.copy.remux.mkv") {
+		t.Fatalf("copy output = %s", jobs[0].Output)
+	}
+	// same-dir: another directory keeps the input name as is; always: the template applies there too.
+	other := filepath.Join(dir, "out") + "/"
+	if jobs, _ := Plan([]string{in}, other, hevc, n); jobs[0].Output != filepath.Join(dir, "out", "x\\y\x07.mkv") {
+		t.Fatalf("same-dir output = %s", jobs[0].Output)
+	}
+	n.Apply = ApplyAlways
+	if jobs, _ := Plan([]string{in}, other, hevc, n); filepath.Base(jobs[0].Output) != "xy.x265.crf22.hevc.mkv" {
+		t.Fatalf("always output = %s", jobs[0].Output)
+	}
+	// The preset's template wins over the config's.
+	hevc.OutputTemplate = "{name}.small"
+	if jobs, _ := Plan([]string{in}, dir+"/", hevc, n); filepath.Base(jobs[0].Output) != "xy.small.mkv" {
+		t.Fatalf("preset template output = %s", jobs[0].Output)
+	}
+	if _, err := Plan([]string{in}, dir+"/", hevc, Naming{OnConflict: "skip"}); err == nil {
+		t.Fatal("unknown conflict policy must fail")
+	}
+}
+
+func TestPlanRefusesInput(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "a.mkv")
+	os.WriteFile(in, nil, 0o600)
+	p := Preset{Name: "remux", Container: "mkv"}
+	for _, n := range []Naming{{Template: "{name}"}, {Template: "{name}", OnConflict: ConflictIncrement}, {OnConflict: ConflictOverwrite}} {
+		if _, err := Plan([]string{in}, dir, p, n); err == nil {
+			t.Errorf("%+v: replacing the input must fail", n)
+		}
+	}
+	if _, err := Plan([]string{in}, in, p, Naming{OnConflict: ConflictOverwrite}); err == nil {
+		t.Error("-o set to the input must fail")
+	}
+}
+
+func TestPlanIncrement(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.conv.mkv"), nil, 0o600)
+	os.WriteFile(filepath.Join(dir, "a.conv.1.mkv"), nil, 0o600)
+	n := Naming{Template: "{name}.conv", OnConflict: ConflictIncrement}
+	// a.mkv and a.mp4 map to the same name; the second gets the next free number.
+	jobs, err := Plan([]string{filepath.Join(dir, "a.mkv"), filepath.Join(dir, "a.mp4")}, dir, Preset{Container: "mkv"}, n)
+	if err != nil || filepath.Base(jobs[0].Output) != "a.conv.2.mkv" || filepath.Base(jobs[1].Output) != "a.conv.3.mkv" {
+		t.Fatalf("Plan() = %+v, %v", jobs, err)
+	}
+	if jobs[0].Overwrite {
+		t.Error("increment must not overwrite")
+	}
+	n.OnConflict = ConflictFail
+	if jobs, _ := Plan([]string{filepath.Join(dir, "a.mkv")}, dir, Preset{Container: "mkv"}, n); filepath.Base(jobs[0].Output) != "a.conv.mkv" {
+		t.Fatalf("fail keeps the name and fails at run time: %s", jobs[0].Output)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
 
 func TestReadProgress(t *testing.T) {
 	// The second block's out_time lags behind the video (sparse subtitles); frame/fps wins.
@@ -227,7 +301,7 @@ func TestQueueConvertsInParallel(t *testing.T) {
 
 	opus := builtin(t, "opus")
 	inputs := []string{src, broken, src}
-	jobs, err := Plan(inputs[:2], filepath.Join(dir, "out"), opus, false)
+	jobs, err := Plan(inputs[:2], filepath.Join(dir, "out"), opus, Naming{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,12 +336,32 @@ func TestQueueConvertsInParallel(t *testing.T) {
 	}
 }
 
+func TestPlanProbedPlaceholders(t *testing.T) {
+	src := testmedia.Generate(t, "clip.mkv", "-c:v", "mpeg4", "-c:a", "flac")
+	dir := filepath.Dir(src)
+	n := Naming{Template: "{name}.{vcodec}.{encoder}.{bitdepth}bit.{fps}fps.{res}.{acodec}"}
+	jobs, err := Plan([]string{src}, dir, builtin(t, "hevc"), n)
+	if err != nil || filepath.Base(jobs[0].Output) != "clip.hevc.x265.8bit.10fps.48p.flac.mkv" {
+		t.Fatalf("hevc = %+v, %v", jobs, err)
+	}
+	// Audio presets keep no video, so the video segments disappear.
+	jobs, err = Plan([]string{src}, dir, builtin(t, "opus"), n)
+	if err != nil || filepath.Base(jobs[0].Output) != "clip.opus.opus.opus" { // encoder, acodec, extension
+		t.Fatalf("opus = %+v, %v", jobs, err)
+	}
+	p := builtin(t, "hevc")
+	p.Video.PixFmt = "yuv420p10le"
+	if jobs, _ := Plan([]string{src}, dir, p, Naming{Template: "{name}.{bitdepth}bit"}); filepath.Base(jobs[0].Output) != "clip.10bit.mkv" {
+		t.Fatalf("pixFmt output = %s", jobs[0].Output)
+	}
+}
+
 func TestFailFastCancelsRemainingJobs(t *testing.T) {
 	src := testmedia.Generate(t, "src.mkv")
 	dir := filepath.Dir(src)
 	broken := filepath.Join(dir, "broken.mkv")
 	os.WriteFile(broken, []byte("junk"), 0o600)
-	jobs, _ := Plan([]string{broken, src}, filepath.Join(dir, "out"), builtin(t, "remux"), false)
+	jobs, _ := Plan([]string{broken, src}, filepath.Join(dir, "out"), builtin(t, "remux"), Naming{})
 
 	q := &Queue{Limits: DefaultLimits(), Cores: 1, FailFast: true}
 	q.SetJobs(1)

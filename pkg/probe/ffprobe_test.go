@@ -53,8 +53,8 @@ func TestBitDepthFromPixFmt(t *testing.T) {
 		"gray16le": 16, "rgb48be": 16, "rgb565le": 0, "unknown": 0,
 	}
 	for pixFmt, want := range tests {
-		if got := bitDepthFromPixFmt(pixFmt); got != want {
-			t.Errorf("bitDepthFromPixFmt(%q) = %d, want %d", pixFmt, got, want)
+		if got := BitDepthFromPixFmt(pixFmt); got != want {
+			t.Errorf("BitDepthFromPixFmt(%q) = %d, want %d", pixFmt, got, want)
 		}
 	}
 }

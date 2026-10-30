@@ -178,7 +178,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loadedMsg:
 		m.files[msg.path] = msg.st
 		return m, nil
-	case presetsMsg, jobEventMsg, queueDoneMsg:
+	case presetsMsg, planMsg, jobEventMsg, queueDoneMsg:
 		cmd := m.conv.update(msg, &m)
 		if _, done := msg.(queueDoneMsg); done && m.quitting {
 			return m, tea.Quit

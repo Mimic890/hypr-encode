@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -23,6 +25,10 @@ var (
 	keySavePreset  = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "save preset"))
 	keyJobs        = key.NewBinding(key.WithKeys("+", "-", "0"), key.WithHelp("+/-/0", "jobs"))
 	keyStop        = key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop"))
+	keyConflict    = key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "on conflict"))
+	keyScroll      = key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("pgup/pgdn", "scroll"))
+	keyConfirm     = key.NewBinding(key.WithKeys("enter", "y"), key.WithHelp("enter", "start"))
+	keyCancel      = key.NewBinding(key.WithKeys("esc", "n"), key.WithHelp("esc", "back"))
 )
 
 // field is one editable override on top of the selected preset. An empty
@@ -83,9 +89,15 @@ type convertPanel struct {
 	presets   []convert.Preset
 	presetIdx int
 	loadErr   error
+	cfg       convert.Config
+	conflict  string   // on-conflict policy, starting from config.yml
 	values    []string // overrides, one per field
 	outDir    string
 	cursor    int // 0 = preset row, 1..len(fields) = fields, len(fields)+1 = output dir
+
+	planned []convert.Job // jobs shown for confirmation before a run; nil when not previewing
+	exists  []bool        // per planned job: the output exists already
+	scroll  int           // first shown line of the preview or job list
 
 	queue   *convert.Queue
 	cancelF context.CancelFunc
@@ -99,7 +111,14 @@ type convertPanel struct {
 type presetsMsg struct {
 	lib     *convert.Library
 	presets []convert.Preset
+	cfg     convert.Config
 	err     error
+}
+
+type planMsg struct {
+	jobs   []convert.Job
+	exists []bool
+	err    error
 }
 
 type jobEventMsg convert.Event
@@ -117,10 +136,14 @@ func newConvertPanel(dir string) *convertPanel {
 	}
 }
 
-// loadPresets reads the library and keeps the presets usable on this machine.
+// loadPresets reads config.yml and the library, keeping the presets usable on this machine.
 func (c *convertPanel) loadPresets(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
 		dir, err := convert.ConfigDir()
+		if err != nil {
+			return presetsMsg{err: err}
+		}
+		cfg, err := convert.LoadConfig(filepath.Join(dir, "config.yml"))
 		if err != nil {
 			return presetsMsg{err: err}
 		}
@@ -129,7 +152,7 @@ func (c *convertPanel) loadPresets(ctx context.Context) tea.Cmd {
 			return presetsMsg{err: err}
 		}
 		presets, _, err := lib.Available(ctx)
-		return presetsMsg{lib, presets, err}
+		return presetsMsg{lib, presets, cfg, err}
 	}
 }
 
@@ -147,7 +170,10 @@ func (c *convertPanel) next() tea.Cmd {
 func (c *convertPanel) update(msg tea.Msg, m *model) tea.Cmd {
 	switch msg := msg.(type) {
 	case presetsMsg:
-		c.lib, c.loadErr = msg.lib, msg.err
+		c.lib, c.loadErr, c.cfg = msg.lib, msg.err, msg.cfg
+		if c.conflict == "" {
+			c.conflict = msg.cfg.Output.OnConflict
+		}
 		name := ""
 		if len(c.presets) > 0 {
 			name = c.presets[c.presetIdx].Name
@@ -158,6 +184,12 @@ func (c *convertPanel) update(msg tea.Msg, m *model) tea.Cmd {
 				c.presetIdx = i
 			}
 		}
+	case planMsg:
+		if msg.err != nil {
+			m.setStatus(msg.err, "")
+			return nil
+		}
+		c.planned, c.exists, c.scroll = msg.jobs, msg.exists, 0
 	case jobEventMsg:
 		j := c.jobs[msg.JobID-1]
 		switch msg.Type {
@@ -221,6 +253,25 @@ func (c *convertPanel) build() (convert.Preset, error) {
 }
 
 func (c *convertPanel) handleKey(msg tea.KeyPressMsg, m *model) tea.Cmd {
+	switch {
+	case key.Matches(msg, keyConflict):
+		c.conflict = convert.Conflicts[(slices.Index(convert.Conflicts, c.conflict)+1)%len(convert.Conflicts)]
+		if c.planned != nil {
+			return c.plan(m) // show the names the new policy gives
+		}
+		return nil
+	case key.Matches(msg, keyScroll):
+		c.scroll += map[string]int{"pgup": -10, "pgdown": 10}[msg.String()] // clamped when drawn
+		return nil
+	case c.planned != nil:
+		switch {
+		case key.Matches(msg, keyConfirm):
+			return c.start(m)
+		case key.Matches(msg, keyCancel):
+			c.planned = nil
+		}
+		return nil
+	}
 	rows := len(fields) + 2
 	switch {
 	case key.Matches(msg, keyUp):
@@ -240,7 +291,7 @@ func (c *convertPanel) handleKey(msg tea.KeyPressMsg, m *model) tea.Cmd {
 		}
 		return m.startPrompt(promptField, strconv.Itoa(i), fields[i].label+" (empty = preset)", c.values[i])
 	case key.Matches(msg, keyRun):
-		return c.run(m)
+		return c.plan(m)
 	case key.Matches(msg, keySavePreset):
 		if _, ok := c.preset(); ok {
 			return m.startPrompt(promptPresetName, "", "Save as preset", "")
@@ -305,7 +356,8 @@ func (c *convertPanel) submitPrompt(kind promptKind, keyName, value string, m *m
 	return c.loadPresets(m.ctx)
 }
 
-func (c *convertPanel) run(m *model) tea.Cmd {
+// plan works out the output names in the background and opens the preview.
+func (c *convertPanel) plan(m *model) tea.Cmd {
 	if c.running {
 		m.setStatus(errors.New("a queue is already running"), "")
 		return nil
@@ -324,21 +376,29 @@ func (c *convertPanel) run(m *model) tea.Cmd {
 	if err == nil {
 		err = p.Normalize()
 	}
-	var jobs []convert.Job
-	if err == nil {
-		jobs, err = convert.Plan(inputs, filepath.Clean(c.outDir)+string(filepath.Separator), p, false)
-	}
-	var limits map[string]int
-	if err == nil {
-		var dir string
-		if dir, err = convert.ConfigDir(); err == nil {
-			limits, err = convert.LoadLimits(filepath.Join(dir, "config.yml"))
-		}
-	}
 	if err != nil {
 		m.setStatus(err, "")
 		return nil
 	}
+	naming := c.cfg.Output
+	naming.OnConflict = c.conflict
+	out := filepath.Clean(c.outDir) + string(filepath.Separator)
+	return func() tea.Msg {
+		jobs, err := convert.Plan(inputs, out, p, naming) // may run ffprobe for the name template
+		exists := make([]bool, len(jobs))
+		for i, j := range jobs {
+			_, statErr := os.Stat(j.Output)
+			exists[i] = statErr == nil
+		}
+		return planMsg{jobs, exists, err}
+	}
+}
+
+// start runs the previewed jobs.
+func (c *convertPanel) start(m *model) tea.Cmd {
+	jobs, limits := c.planned, c.cfg.Jobs
+	c.planned, c.scroll = nil, 0
+	p := jobs[0].Preset
 
 	ctx, cancel := context.WithCancel(m.ctx)
 	c.cancelF, c.running, c.active = cancel, true, 0
@@ -392,6 +452,7 @@ func (c *convertPanel) lines(w, h int, m *model) []string {
 		row(i+1, f.label, value)
 	}
 	row(len(fields)+1, "Output dir", c.outDir)
+	row(-1, "On conflict", c.conflict+dimStyle.Render("  (o)"))
 
 	inputs := len(m.browser.markedPaths())
 	target := fmt.Sprintf("%d marked files", inputs)
@@ -403,6 +464,20 @@ func (c *convertPanel) lines(w, h int, m *model) []string {
 		jobs = strconv.Itoa(c.queue.Jobs())
 	}
 	lines = append(lines, "", dimStyle.Render(fmt.Sprintf("r converts %s · jobs %s · %d running", target, jobs, c.active)))
+	if c.planned != nil {
+		lines = append(lines, "", boldStyle.Render(fmt.Sprintf("Output names (%d)", len(c.planned))))
+		var list []string
+		for i, j := range c.planned {
+			note := ""
+			if c.exists[i] && j.Overwrite {
+				note = errStyle.Render("  replaces existing")
+			} else if c.exists[i] {
+				note = errStyle.Render("  exists, will fail")
+			}
+			list = append(list, fitLine(filepath.Base(j.Input)+" → "+headStyle.Render(filepath.Base(j.Output))+note, w))
+		}
+		return append(lines, c.scrolled(list, -1, max(h-len(lines), 1))...)
+	}
 	if len(c.jobs) == 0 {
 		return lines
 	}
@@ -412,7 +487,11 @@ func (c *convertPanel) lines(w, h int, m *model) []string {
 	c.bar.SetWidth(barW)
 	total, done := 0.0, 0
 	var jobLines []string
+	cur := -1 // line of the first running job
 	for _, j := range c.jobs {
+		if cur < 0 && (j.state == "start" || j.state == "progress") {
+			cur = len(jobLines)
+		}
 		total += j.percent
 		state := fmt.Sprintf("%3.0f%%", j.percent*100)
 		switch j.state {
@@ -430,10 +509,22 @@ func (c *convertPanel) lines(w, h int, m *model) []string {
 		}
 	}
 	lines = append(lines, "", fitLine(boldStyle.Render("Total"), nameW)+" "+c.bar.ViewAs(total/float64(len(c.jobs)))+fmt.Sprintf(" %d/%d", done, len(c.jobs)))
-	room := max(h-len(lines), 1) // shortcut: long queues show only their first jobs; scroll if queues of dozens become common
-	return append(lines, jobLines[:min(len(jobLines), room)]...)
+	return append(lines, c.scrolled(jobLines, cur, max(h-len(lines), 1))...)
+}
+
+// scrolled returns room lines of list from c.scroll, moved just enough to keep
+// line cur visible (cur < 0 for none).
+func (c *convertPanel) scrolled(list []string, cur, room int) []string {
+	if cur >= 0 {
+		c.scroll = min(max(c.scroll, cur-room+1), cur)
+	}
+	c.scroll = max(min(c.scroll, len(list)-room), 0)
+	return list[c.scroll:min(c.scroll+room, len(list))]
 }
 
 func (c *convertPanel) keys() []key.Binding {
-	return []key.Binding{keyUp, keyDown, keyPresetCycle, keyEditField, keyRun, keySavePreset, keyJobs, keyStop}
+	if c.planned != nil {
+		return []key.Binding{keyConfirm, keyCancel, keyConflict, keyScroll}
+	}
+	return []key.Binding{keyUp, keyDown, keyPresetCycle, keyEditField, keyRun, keySavePreset, keyJobs, keyStop, keyConflict, keyScroll}
 }

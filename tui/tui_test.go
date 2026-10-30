@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -25,6 +27,8 @@ func press(m tea.Model, keys ...string) (tea.Model, tea.Cmd) {
 			msg = tea.KeyPressMsg{Code: tea.KeyTab}
 		case "down":
 			msg = tea.KeyPressMsg{Code: tea.KeyDown}
+		case "esc":
+			msg = tea.KeyPressMsg{Code: tea.KeyEscape}
 		default:
 			for _, r := range k {
 				m, cmd = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
@@ -151,6 +155,7 @@ func TestConvertQueueRuns(t *testing.T) {
 	file := testmedia.Generate(t, "clip.mkv")
 	dir := filepath.Dir(file)
 	m := newTestModel(t, dir)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m, cmd := press(m, "down", " ") // mark clip.mkv
 	m = drain(t, m, cmd)
 	m, _ = press(m, "tab", "4")
@@ -160,8 +165,16 @@ func TestConvertQueueRuns(t *testing.T) {
 			c.presetIdx = i
 		}
 	}
+	c.outDir = dir       // next to the input, so the default {name}.conv template applies
 	m, _ = press(m, "+") // no queue yet: ignored
+
+	// r previews the names; enter starts the queue.
 	m, cmd = press(m, "r")
+	m = drain(t, m, cmd)
+	if !strings.Contains(ansi.Strip(m.(model).render()), "clip.mkv → clip.conv.mkv") {
+		t.Fatalf("preview lacks the output name; status %q", m.(model).status)
+	}
+	m, cmd = press(m, "enter")
 	m = drain(t, m, cmd)
 	if m.(model).statusErr {
 		t.Fatal(m.(model).status)
@@ -169,7 +182,44 @@ func TestConvertQueueRuns(t *testing.T) {
 	if c.running || len(c.jobs) != 1 || c.jobs[0].state != "done" {
 		t.Fatalf("running %v jobs %+v", c.running, c.jobs[0])
 	}
-	if _, err := os.Stat(filepath.Join(dir, "converted", "clip.mkv")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "clip.conv.mkv")); err != nil {
 		t.Fatal(err)
+	}
+
+	// A second run sees the existing output; o switches fail → overwrite → increment.
+	m, cmd = press(m, "r")
+	m = drain(t, m, cmd)
+	if !strings.Contains(ansi.Strip(m.(model).render()), "exists, will fail") {
+		t.Error("preview does not flag the existing output")
+	}
+	m, cmd = press(m, "o")
+	m = drain(t, m, cmd)
+	m, cmd = press(m, "o")
+	m = drain(t, m, cmd)
+	if !strings.Contains(ansi.Strip(m.(model).render()), "clip.conv.1.mkv") {
+		t.Errorf("increment preview: %s", ansi.Strip(m.(model).render()))
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if c.planned != nil {
+		t.Error("esc must close the preview")
+	}
+}
+
+func TestScrolledKeepsCurrentVisible(t *testing.T) {
+	list := make([]string, 20)
+	for i := range list {
+		list[i] = strconv.Itoa(i)
+	}
+	c := &convertPanel{}
+	if got := c.scrolled(list, 15, 5); got[len(got)-1] != "15" {
+		t.Fatalf("current job hidden: %v", got)
+	}
+	c.scroll = 0 // scrolled up by the user: pulled back to keep the current line
+	if got := c.scrolled(list, 15, 5); !slices.Contains(got, "15") {
+		t.Fatalf("current job hidden: %v", got)
+	}
+	c.scroll = 100
+	if got := c.scrolled(list, -1, 5); got[0] != "15" || len(got) != 5 {
+		t.Fatalf("clamped = %v", got)
 	}
 }

@@ -53,7 +53,9 @@ type Preset struct {
 	Tracks      []string `yaml:"tracks,omitempty" json:"tracks,omitempty"`       // track selectors; empty keeps all
 	InputArgs   []string `yaml:"inputArgs,omitempty" json:"inputArgs,omitempty"` // raw args before -i
 	Args        []string `yaml:"args,omitempty" json:"args,omitempty"`           // raw output args
-	Source      string   `yaml:"-" json:"source"`                                // "builtin" or "user"
+	// OutputTemplate replaces the name template of config.yml for this preset.
+	OutputTemplate string `yaml:"outputTemplate,omitempty" json:"outputTemplate,omitempty"`
+	Source         string `yaml:"-" json:"source"` // "builtin" or "user"
 }
 
 // ErrUnknownPreset is returned for preset names that are not defined.
@@ -78,6 +80,11 @@ func (p *Preset) Normalize() error {
 		return fmt.Errorf("preset %s: load %q must be one of %s", p.Name, p.Load, strings.Join(Loads, ", "))
 	case strings.ContainsAny(p.Container, `/\.`):
 		return fmt.Errorf("preset %s: container %q must be a bare extension like mkv", p.Name, p.Container)
+	}
+	if p.OutputTemplate != "" {
+		if err := checkTemplate(p.OutputTemplate); err != nil {
+			return fmt.Errorf("preset %s: %w", p.Name, err)
+		}
 	}
 	for _, sel := range p.Tracks {
 		if _, err := mapArg(sel); err != nil {

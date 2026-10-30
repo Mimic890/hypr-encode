@@ -98,10 +98,20 @@ func TestConvertJSONLines(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 
-	// The input itself is never replaced without --overwrite.
-	code, _, stderr = runApp(context.Background(), "convert", src, "-o", src, "--preset", "remux")
-	if code != exitError || !strings.Contains(stderr, "--overwrite") {
+	// The input itself is never replaced, not even with --overwrite.
+	code, _, stderr = runApp(context.Background(), "convert", src, "-o", src, "--preset", "remux", "--overwrite")
+	if code != exitUsage || !strings.Contains(stderr, "would replace its input") {
 		t.Fatalf("convert onto the input: code %d, stderr %q", code, stderr)
+	}
+	// --dry-run --json shows the templated name; increment numbers it past the existing file.
+	code, out, _ = runApp(context.Background(), "convert", "--json", src, "-o", filepath.Dir(src), "--preset", "remux", "--dry-run")
+	if code != exitOK || !strings.Contains(out, `"output": "`+filepath.Join(filepath.Dir(src), "src.conv.mkv")+`"`) {
+		t.Fatalf("dry-run: code %d, out %s", code, out)
+	}
+	os.WriteFile(filepath.Join(filepath.Dir(src), "src.conv.mkv"), nil, 0o600)
+	code, out, _ = runApp(context.Background(), "convert", "--json", src, "-o", filepath.Dir(src), "--preset", "remux", "--dry-run", "--on-conflict", "increment", "--name-template", "{name}.conv")
+	if code != exitOK || !strings.Contains(out, "src.conv.1.mkv") {
+		t.Fatalf("increment dry-run: code %d, out %s", code, out)
 	}
 }
 

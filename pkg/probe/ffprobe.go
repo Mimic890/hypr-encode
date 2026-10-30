@@ -280,7 +280,7 @@ func parseVideoStream(s rawStream) VideoStream {
 	vs.SizeBytes = tagInt64Prefix(s.Tags, "NUMBER_OF_BYTES")
 	// If ffprobe didn't report bit depth directly, infer it from the pixel format name.
 	if vs.BitDepth == 0 {
-		vs.BitDepth = bitDepthFromPixFmt(s.PixFmt)
+		vs.BitDepth = BitDepthFromPixFmt(s.PixFmt)
 	}
 	vs.HDR = detectHDR(s)
 	vs.IsAttachedPic = s.Disposition.AttachedPic == 1
@@ -496,8 +496,8 @@ func parseIntStr(val string) int {
 	return n
 }
 
-// bitDepthFromPixFmt infers bit depth only from well-known ffmpeg names.
-func bitDepthFromPixFmt(pix string) int {
+// BitDepthFromPixFmt infers bit depth only from well-known ffmpeg names.
+func BitDepthFromPixFmt(pix string) int {
 	pix = strings.ToLower(pix)
 	switch {
 	case strings.HasPrefix(pix, "p010"), strings.Contains(pix, "p10"), strings.HasPrefix(pix, "gray10"):

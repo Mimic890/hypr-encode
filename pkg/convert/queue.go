@@ -1,18 +1,14 @@
 package convert
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
-
-	"go.yaml.in/yaml/v3"
+	"time"
 )
 
 // Event reports a job state change. Type is one of start, progress, done, failed, canceled.
@@ -28,13 +24,23 @@ type Event struct {
 
 // Plan assigns an output path to every input. out names the output file for a
 // single input, or a directory: one that exists, ends in a path separator, or
-// is given with several inputs. Directory outputs use the preset container as
-// extension, or keep the input extension when the preset has none.
-func Plan(inputs []string, out string, p Preset, overwrite bool) ([]Job, error) {
+// is given with several inputs. Directory outputs are named by the name
+// template (the preset's, else n.Template) when n.Apply allows it, and use the
+// preset container as extension, or keep the input extension when the preset
+// has none. An output that would replace its input is an error.
+func Plan(inputs []string, out string, p Preset, n Naming) ([]Job, error) {
+	if err := n.validate(); err != nil {
+		return nil, err
+	}
+	tmpl := n.Template
+	if p.OutputTemplate != "" {
+		tmpl = p.OutputTemplate
+	}
 	dirOut := len(inputs) > 1 || strings.HasSuffix(out, "/") || strings.HasSuffix(out, string(filepath.Separator))
 	if fi, err := os.Stat(out); err == nil && fi.IsDir() {
 		dirOut = true
 	}
+	now := time.Now()
 	jobs := make([]Job, 0, len(inputs))
 	seen := map[string]string{}
 	for i, in := range inputs {
@@ -45,7 +51,25 @@ func Plan(inputs []string, out string, p Preset, overwrite bool) ([]Job, error) 
 			if p.Container != "" {
 				ext = "." + p.Container
 			}
+			if tmpl != "" && (n.Apply == ApplyAlways || samePath(out, filepath.Dir(in))) {
+				var err error
+				if name, err = expandTemplate(tmpl, in, p, now); err != nil {
+					return nil, err
+				}
+			}
 			dst = filepath.Join(out, name+ext)
+		}
+		if samePath(dst, in) {
+			return nil, fmt.Errorf("output %s would replace its input; pick another name or directory", dst)
+		}
+		taken := func(path string) bool {
+			abs, _ := filepath.Abs(path)
+			_, planned := seen[abs]
+			_, err := os.Lstat(path)
+			return planned || err == nil
+		}
+		for k, base := 1, dst; n.OnConflict == ConflictIncrement && taken(dst); k++ {
+			dst = numbered(base, k)
 		}
 		abs, err := filepath.Abs(dst)
 		if err != nil {
@@ -55,7 +79,7 @@ func Plan(inputs []string, out string, p Preset, overwrite bool) ([]Job, error) 
 			return nil, fmt.Errorf("%s and %s would both be written to %s", prev, in, dst)
 		}
 		seen[abs] = in
-		jobs = append(jobs, Job{ID: i + 1, Input: in, Output: dst, Preset: p, Overwrite: overwrite})
+		jobs = append(jobs, Job{ID: i + 1, Input: in, Output: dst, Preset: p, Overwrite: n.OnConflict == ConflictOverwrite})
 	}
 	return jobs, nil
 }
@@ -63,34 +87,6 @@ func Plan(inputs []string, out string, p Preset, overwrite bool) ([]Job, error) 
 // DefaultLimits are the automatic per-class concurrency limits.
 func DefaultLimits() map[string]int {
 	return map[string]int{LoadCPUHeavy: 1, LoadLight: runtime.NumCPU(), LoadGPU: 2, LoadIO: 2}
-}
-
-// LoadLimits reads per-class limits from the jobs section of config.yml,
-// filling the rest from DefaultLimits. A missing file is not an error.
-func LoadLimits(path string) (map[string]int, error) {
-	limits := DefaultLimits()
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return limits, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var cfg struct {
-		Jobs map[string]int `yaml:"jobs"`
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	for class, n := range cfg.Jobs {
-		if _, ok := limits[class]; !ok || n < 1 {
-			return nil, fmt.Errorf("%s: jobs.%s: want a load class (%s) with a value of at least 1", path, class, strings.Join(Loads, ", "))
-		}
-		limits[class] = n
-	}
-	return limits, nil
 }
 
 // Queue runs jobs concurrently. With a fixed job count any job may take a free
