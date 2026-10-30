@@ -10,7 +10,7 @@ Every command has `--json` output with a versioned schema and documented exit co
 
 ## Install
 
-Requirements: Go 1.21+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits and [ExifTool](https://exiftool.org/) for image metadata. `hypr-encode doctor` lists what is installed.
+Requirements: Go 1.26+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits and [ExifTool](https://exiftool.org/) for image metadata. `hypr-encode doctor` lists what is installed.
 
 ```sh
 go install github.com/Mimic890/hypr-encode@latest
@@ -35,6 +35,7 @@ hypr-encode <command> [flags] [args]
 | `preset <command>` | List, show, save, remove or edit presets |
 | `meta get\|set\|rm <file...>` | Read or edit container, track and image tags |
 | `doctor` | Check external tools, their versions and GPU presets |
+| `tui [dir]` | Open the terminal interface |
 
 `hypr-encode <path...>` is shorthand for `hypr-encode info <path...>`. To inspect a file literally named like a command, use `hypr-encode info ./info`.
 
@@ -214,6 +215,27 @@ hypr-encode doctor [--json]
 ```
 
 Checks `ffprobe`, `ffmpeg`, `mkvpropedit` and `exiftool`: whether each is in `PATH` and which version it reports. It also test-encodes a short clip with every GPU preset, since an encoder listed by ffmpeg may still lack the hardware or driver. Exits with code 4 if any tool is missing; GPU results do not affect the exit code. Commands that do not need a missing tool keep working.
+
+### tui
+
+```text
+hypr-encode tui [dir]
+```
+
+Opens a full-screen interface in `dir` (default: the current directory): a file browser on the left and the Info, Tracks, Metadata and Convert tabs on the right. It starts only with this command and needs stdin and stdout to be a terminal; it exits with code 2 otherwise. `--json` is not supported.
+
+| Key | Action |
+| --- | --- |
+| `1`–`4` | Switch tabs |
+| `tab` | Move focus between the file browser and the tab |
+| `↑`/`↓` or `k`/`j` | Move the cursor |
+| `enter`, `→` / `⌫`, `←` | Open a directory / go to the parent (browser) |
+| `space` | Mark a file for conversion (browser) |
+| `q`, `ctrl+c` | Quit; a running queue is stopped first and its temp files removed |
+
+**Metadata** lists container tags (or image tags by group) and every track with its tags. `enter` edits a value, `a` adds `KEY=VALUE` to the selected container or track, `d` deletes a tag, `t` and `f` toggle a track's default and forced flags, `u` drops all pending changes. Changes stay pending until `w`, which shows them with the exact commands; then `y` writes in place, `c` writes a `name.edited.ext` copy (an existing copy is never overwritten) and `esc` goes back. Moving to another file drops pending changes.
+
+**Convert** picks a preset with `←`/`→` (only presets usable on this machine) and overrides its fields with `enter`; an empty field keeps the preset value. `r` converts the marked files, or the selected one, into the output directory (default `converted/` under the starting directory) with the same queue as `convert`; existing outputs are never overwritten. Each job shows a progress bar, plus a total. `+` and `-` change the number of parallel jobs, `0` returns to automatic limits; a new count applies to jobs started afterwards. `x` stops the queue. `s` saves the current preset and overrides as a user preset that extends it.
 
 ## Terminal output
 

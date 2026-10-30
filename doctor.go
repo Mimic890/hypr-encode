@@ -48,7 +48,7 @@ func (a *app) doctor(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		_, gpu, err := availablePresets(ctx, lib)
+		_, gpu, err := lib.Available(ctx)
 		if err != nil {
 			return err
 		}

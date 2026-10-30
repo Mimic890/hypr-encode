@@ -236,3 +236,24 @@ func VerifyGPU(ctx context.Context, presets []Preset) map[string]error {
 	wg.Wait()
 	return results
 }
+
+// Available resolves every preset in the library and test-encodes the GPU
+// ones. It returns the presets usable here and each GPU preset's result.
+func (l *Library) Available(ctx context.Context) ([]Preset, map[string]error, error) {
+	var all []Preset
+	for _, name := range l.Names() {
+		p, err := l.Get(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		all = append(all, p)
+	}
+	gpu := VerifyGPU(ctx, all)
+	var ok []Preset
+	for _, p := range all {
+		if gpu[p.Name] == nil {
+			ok = append(ok, p)
+		}
+	}
+	return ok, gpu, ctx.Err()
+}

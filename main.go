@@ -16,9 +16,12 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/Mimic890/hypr-encode/pkg/meta"
 	"github.com/Mimic890/hypr-encode/pkg/probe"
 	"github.com/Mimic890/hypr-encode/pkg/tools"
+	"github.com/Mimic890/hypr-encode/tui"
 )
 
 // schemaVersion is bumped only on breaking changes to any --json output.
@@ -63,6 +66,7 @@ Commands:
   preset <command>           List, show, save, remove or edit presets
   meta get|set|rm <file...>  Read or edit container, track and image tags
   doctor                     Check external tools, versions and GPU presets
+  tui [dir]                  Open the terminal interface (needs a terminal)
 
 hypr-encode <path...> is shorthand for hypr-encode info <path...>.
 Run hypr-encode <command> -h for command flags.
@@ -136,12 +140,34 @@ func (a *app) run(ctx context.Context, args []string) error {
 			return a.preset(ctx, args[1:])
 		case "meta":
 			return a.meta(ctx, args[1:])
+		case "tui":
+			return a.tui(ctx, args[1:])
 		case "help", "-h", "-help", "--help":
 			fmt.Fprint(a.stdout, usageText)
 			return nil
 		}
 	}
 	return a.info(ctx, args)
+}
+
+func (a *app) tui(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("tui", flag.ContinueOnError)
+	args, err := a.parseFlags(fs, args, "tui [dir]")
+	switch {
+	case err != nil:
+		return err
+	case a.json:
+		return usageErr("tui: --json is not supported; use the other commands")
+	case len(args) > 1:
+		return usageErr("tui: expected at most one directory")
+	case !stdoutTTY || !term.IsTerminal(int(os.Stdin.Fd())):
+		return usageErr("tui: stdin and stdout must be a terminal")
+	}
+	dir := "."
+	if len(args) == 1 {
+		dir = args[0]
+	}
+	return tui.Run(ctx, dir)
 }
 
 // parseFlags parses flags placed anywhere among the arguments and returns the
@@ -326,7 +352,7 @@ func mediaPaths(dir string) ([]string, error) {
 	}
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".") || !isMediaFile(entry.Name()) {
+		if strings.HasPrefix(entry.Name(), ".") || !probe.IsMediaFile(entry.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
@@ -337,17 +363,4 @@ func mediaPaths(dir string) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
-}
-
-func isMediaFile(name string) bool {
-	switch strings.ToLower(filepath.Ext(name)) {
-	case ".mkv", ".mp4", ".mov", ".avi", ".m4v", ".webm", ".wmv", ".mpg", ".mpeg",
-		".ts", ".m2ts", ".mts", ".vob", ".mxf", ".flv", ".ogv", ".3gp",
-		".mp3", ".flac", ".aac", ".opus", ".ogg", ".oga", ".wav", ".m4a",
-		".aiff", ".aif", ".ape", ".wma", ".alac", ".ac3", ".dts",
-		".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
-		".avif", ".heic", ".heif":
-		return true
-	}
-	return false
 }

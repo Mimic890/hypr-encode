@@ -48,26 +48,6 @@ func (a *app) preset(ctx context.Context, args []string) error {
 	return usageErr("preset: unknown command %q\n\n%s", args[0], presetUsage)
 }
 
-// availablePresets resolves every preset and splits off GPU presets that fail a test encode.
-func availablePresets(ctx context.Context, lib *convert.Library) ([]convert.Preset, map[string]error, error) {
-	var all []convert.Preset
-	for _, name := range lib.Names() {
-		p, err := lib.Get(name)
-		if err != nil {
-			return nil, nil, err
-		}
-		all = append(all, p)
-	}
-	gpu := convert.VerifyGPU(ctx, all)
-	var ok []convert.Preset
-	for _, p := range all {
-		if gpu[p.Name] == nil {
-			ok = append(ok, p)
-		}
-	}
-	return ok, gpu, ctx.Err()
-}
-
 type unavailablePreset struct {
 	Name  string `json:"name"`
 	Error string `json:"error"`
@@ -82,7 +62,7 @@ func (a *app) presetList(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	presets, gpu, err := availablePresets(ctx, lib)
+	presets, gpu, err := lib.Available(ctx)
 	if err != nil {
 		return err
 	}

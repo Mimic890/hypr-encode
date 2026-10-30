@@ -235,6 +235,20 @@ func parseFFprobe(path string, fileSize int64, out []byte) (*MediaInfo, error) {
 	return info, nil
 }
 
+// IsMediaFile reports whether a file name has an audio, video or image extension ffprobe reads.
+func IsMediaFile(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".mkv", ".mp4", ".mov", ".avi", ".m4v", ".webm", ".wmv", ".mpg", ".mpeg",
+		".ts", ".m2ts", ".mts", ".vob", ".mxf", ".flv", ".ogv", ".3gp",
+		".mp3", ".flac", ".aac", ".opus", ".ogg", ".oga", ".wav", ".m4a",
+		".aiff", ".aif", ".ape", ".wma", ".alac", ".ac3", ".dts",
+		".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff",
+		".avif", ".heic", ".heif":
+		return true
+	}
+	return false
+}
+
 // ── Stream parsers ────────────────────────────────────────────────────────────
 
 func parseVideoStream(s rawStream) VideoStream {
