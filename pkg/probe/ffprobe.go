@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
 // ── Output types ──────────────────────────────────────────────────────────────
@@ -115,11 +117,12 @@ type SubStream struct {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-const defaultTimeout = 30 * time.Second
+// DefaultTimeout bounds one ffprobe run.
+const DefaultTimeout = 30 * time.Second
 
 // ScanFile runs ffprobe on a local file and returns full media information.
 func ScanFile(path string) (*MediaInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
 	defer cancel()
 	return ScanFileContext(ctx, path)
 }
@@ -152,7 +155,7 @@ func ScanFileContext(ctx context.Context, path string) (*MediaInfo, error) {
 			return nil, fmt.Errorf("ffprobe %q: %w", filepath.Base(path), ctx.Err())
 		}
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("ffprobe not found in PATH; install ffmpeg: %w", err)
+			return nil, &tools.MissingError{Name: "ffprobe"}
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -179,6 +182,9 @@ func parseFFprobe(path string, fileSize int64, out []byte) (*MediaInfo, error) {
 		FormatLong: raw.Format.FormatLongName,
 		Chapters:   len(raw.Chapters),
 		Tags:       raw.Format.Tags,
+		Video:      []VideoStream{},
+		Audio:      []AudioStream{},
+		Subtitle:   []SubStream{},
 	}
 	if info.Tags == nil {
 		info.Tags = map[string]string{}

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "ffprobe",
+      "found": true,
+      "path": "/usr/bin/ffprobe",
+      "version": "7.1"
+    },
+    {
+      "name": "mkvpropedit",
+      "found": false,
+      "error": "mkvpropedit not found in PATH; install MKVToolNix"
+    }
+  ]
+}

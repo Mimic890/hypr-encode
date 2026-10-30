@@ -1,92 +1,293 @@
-// hypr-encode is a terminal media file inspector powered by ffprobe.
+// hypr-encode inspects, converts and retags media files using ffmpeg tools.
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/Mimic890/hypr-encode/pkg/probe"
+	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
+// schemaVersion is bumped only on breaking changes to any --json output.
+const schemaVersion = 1
+
+// Exit codes. Documented in README.md.
+const (
+	exitOK          = 0
+	exitError       = 1
+	exitUsage       = 2
+	exitPartial     = 3
+	exitMissingTool = 4
+	exitInterrupted = 130
+)
+
+var exitNames = map[int]string{
+	exitError:       "error",
+	exitUsage:       "usage",
+	exitPartial:     "partial",
+	exitMissingTool: "tool_missing",
+	exitInterrupted: "interrupted",
+}
+
+// codedError attaches an exit code to an error.
+type codedError struct {
+	code int
+	err  error
+}
+
+func (e *codedError) Error() string { return e.err.Error() }
+func (e *codedError) Unwrap() error { return e.err }
+
+func usageErr(format string, a ...any) error {
+	return &codedError{exitUsage, fmt.Errorf(format, a...)}
+}
+
+const usageText = `Usage: hypr-encode <command> [flags] [args]
+
+Commands:
+  info [path...]   Show media information (default command)
+  doctor           Check external tools and their versions
+
+hypr-encode <path...> is shorthand for hypr-encode info <path...>.
+Run hypr-encode <command> -h for command flags.
+`
+
+type app struct {
+	stdout, stderr io.Writer
+	json           bool
+}
+
 func main() {
-	target, err := parseTarget(os.Args[1:], os.Stdout)
-	if errors.Is(err, flag.ErrHelp) {
-		return
-	}
-	if err == nil {
-		err = run(target)
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, anRed+"✖ "+safeText(err.Error())+anReset)
-		os.Exit(1)
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	a := &app{stdout: os.Stdout, stderr: os.Stderr}
+	code := a.main(ctx, os.Args[1:])
+	stop()
+	os.Exit(code)
 }
 
-func parseTarget(args []string, out io.Writer) (string, error) {
-	flags := flag.NewFlagSet("hypr-encode", flag.ContinueOnError)
-	flags.SetOutput(out)
-	flags.Usage = func() {
-		fmt.Fprintln(out, "Usage: hypr-encode [file|directory]")
-		fmt.Fprintln(out, "Inspect one media file or all media files in a directory.")
-	}
-	if err := flags.Parse(args); err != nil {
-		return "", err
-	}
-	if flags.NArg() > 1 {
-		return "", fmt.Errorf("expected at most one path, got %d", flags.NArg())
-	}
-	if flags.NArg() == 1 {
-		return flags.Arg(0), nil
-	}
-	return ".", nil
-}
-
-func run(target string) error {
-	fi, err := os.Stat(target)
-	if err != nil {
-		return err
-	}
-	if !fi.IsDir() {
-		info, err := probe.ScanFile(target)
-		if err != nil {
-			return err
+// main runs one command, reports its error to stderr and returns the exit code.
+func (a *app) main(ctx context.Context, args []string) int {
+	for _, arg := range args {
+		if arg == "--" {
+			break
 		}
-		printFileInfo(info)
-		return nil
+		a.json = a.json || arg == "--json" || arg == "-json"
+	}
+	err := a.run(ctx, args)
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		return exitOK
 	}
 
-	paths, err := mediaPaths(target)
+	code := exitError
+	var ee *codedError
+	switch {
+	case ctx.Err() != nil:
+		code, err = exitInterrupted, errors.New("interrupted")
+	case errors.As(err, &ee):
+		code = ee.code
+	case errors.Is(err, tools.ErrMissing):
+		code = exitMissingTool
+	}
+
+	if a.json {
+		var line struct {
+			SchemaVersion int `json:"schemaVersion"`
+			Error         struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		line.SchemaVersion = schemaVersion
+		line.Error.Code, line.Error.Message = exitNames[code], err.Error()
+		json.NewEncoder(a.stderr).Encode(line)
+	} else {
+		fmt.Fprintln(a.stderr, anRed+"✖ "+safeText(err.Error())+anReset)
+	}
+	return code
+}
+
+func (a *app) run(ctx context.Context, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "info":
+			return a.info(ctx, args[1:])
+		case "doctor":
+			return a.doctor(ctx, args[1:])
+		case "help", "-h", "-help", "--help":
+			fmt.Fprint(a.stdout, usageText)
+			return nil
+		}
+	}
+	return a.info(ctx, args)
+}
+
+// parseFlags parses flags placed anywhere among the arguments and returns the
+// positional ones. "--" ends flag parsing. Every command accepts --json.
+func (a *app) parseFlags(fs *flag.FlagSet, args []string, usage string) ([]string, error) {
+	fs.SetOutput(io.Discard)
+	fs.BoolVar(&a.json, "json", a.json, "print machine-readable JSON to stdout")
+	var pos []string
+	for {
+		err := fs.Parse(args)
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintf(a.stdout, "Usage: hypr-encode %s\n\nFlags:\n", usage)
+			fs.SetOutput(a.stdout)
+			fs.PrintDefaults()
+			return nil, err
+		}
+		if err != nil {
+			return nil, usageErr("%s: %v", fs.Name(), err)
+		}
+		rest := fs.Args()
+		consumed := args[:len(args)-len(rest)]
+		if len(consumed) > 0 && consumed[len(consumed)-1] == "--" {
+			return append(pos, rest...), nil
+		}
+		if len(rest) == 0 {
+			return pos, nil
+		}
+		pos, args = append(pos, rest[0]), rest[1:]
+	}
+}
+
+// writeJSON prints one indented JSON document to stdout.
+func (a *app) writeJSON(v any) error {
+	enc := json.NewEncoder(a.stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+// textOut returns stdout for human-readable output, without frames when piped.
+func (a *app) textOut() io.Writer {
+	if stdoutTTY {
+		return a.stdout
+	}
+	return &framelessWriter{w: a.stdout}
+}
+
+// batchErr summarizes per-item failures: exit 3 if some items succeeded, 1 if none did.
+func batchErr(verb string, failed, total int) error {
+	if failed == 0 {
+		return nil
+	}
+	err := fmt.Errorf("failed to %s %d of %d files", verb, failed, total)
+	if failed < total {
+		return &codedError{exitPartial, err}
+	}
+	return err
+}
+
+// ── info ──────────────────────────────────────────────────────────────────────
+
+type infoDoc struct {
+	SchemaVersion int                `json:"schemaVersion"`
+	Files         []*probe.MediaInfo `json:"files"`
+	Errors        []itemError        `json:"errors"`
+}
+
+type itemError struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+func (a *app) info(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("info", flag.ContinueOnError)
+	args, err := a.parseFlags(fs, args, "info [--json] [file|directory...]")
 	if err != nil {
 		return err
 	}
-	if len(paths) == 0 {
-		fmt.Printf("\n  %sNo media files found in %s%s\n\n", anGray, shortenPath(target), anReset)
-		return nil
+	if len(args) == 0 {
+		args = []string{"."}
+	}
+	if _, err := tools.Path("ffprobe"); err != nil {
+		return err
 	}
 
-	failures := 0
-	tw := termWidth()
-	fmt.Println()
-	for i, path := range paths {
-		info, err := probe.ScanFile(path)
+	w := a.textOut()
+	doc := infoDoc{SchemaVersion: schemaVersion, Files: []*probe.MediaInfo{}, Errors: []itemError{}}
+	var paths []string
+	for _, arg := range args {
+		found, err := expandPath(arg)
 		if err != nil {
-			failures++
-			fmt.Fprintf(os.Stderr, "  %s✖ %s: %s%s\n", anRed, safeText(filepath.Base(path)), safeText(err.Error()), anReset)
+			doc.Errors = append(doc.Errors, itemError{arg, err.Error()})
 			continue
 		}
-		printFileCard(info, tw, i+1)
-		fmt.Println()
+		if len(found) == 0 && !a.json {
+			fmt.Fprintf(w, "\n  %sNo media files found in %s%s\n\n", anGray, shortenPath(arg), anReset)
+		}
+		paths = append(paths, found...)
 	}
-	if failures > 0 {
-		return fmt.Errorf("failed to inspect %d of %d media files", failures, len(paths))
+
+	total := len(doc.Errors) + len(paths)
+	report := func(e itemError) {
+		// A single failure is reported once, as the command error.
+		if !a.json && total > 1 {
+			fmt.Fprintf(a.stderr, "  %s✖ %s: %s%s\n", anRed, safeText(filepath.Base(e.Path)), safeText(e.Error), anReset)
+		}
 	}
-	return nil
+	for _, e := range doc.Errors {
+		report(e)
+	}
+
+	detail := len(args) == 1 && len(paths) == 1 && paths[0] == args[0]
+	if len(paths) > 0 && !detail && !a.json {
+		fmt.Fprintln(w)
+	}
+	for _, path := range paths {
+		pctx, cancel := context.WithTimeout(ctx, probe.DefaultTimeout)
+		info, err := probe.ScanFileContext(pctx, path)
+		cancel()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			doc.Errors = append(doc.Errors, itemError{path, err.Error()})
+			report(doc.Errors[len(doc.Errors)-1])
+			continue
+		}
+		doc.Files = append(doc.Files, info)
+		switch {
+		case a.json:
+		case detail:
+			printFileInfo(w, info)
+		default:
+			printFileCard(w, info, termWidth(), len(doc.Files))
+			fmt.Fprintln(w)
+		}
+	}
+
+	if a.json {
+		if err := a.writeJSON(doc); err != nil {
+			return err
+		}
+	}
+	if total == 1 && len(doc.Errors) == 1 {
+		return errors.New(doc.Errors[0].Error)
+	}
+	return batchErr("inspect", len(doc.Errors), total)
+}
+
+// expandPath returns the file itself, or the media files directly inside a directory.
+func expandPath(path string) ([]string, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if fi.IsDir() {
+		return mediaPaths(path)
+	}
+	return []string{path}, nil
 }
 
 func mediaPaths(dir string) ([]string, error) {

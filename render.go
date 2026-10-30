@@ -2,7 +2,9 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Mimic890/hypr-encode/pkg/probe"
+	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
 // ── Colours ───────────────────────────────────────────────────────────────────
@@ -34,8 +37,11 @@ var (
 	anReset   = "\x1b[0m"
 )
 
+// stdoutTTY reports whether stdout is a terminal; colors and frames are drawn only there.
+var stdoutTTY = term.IsTerminal(int(os.Stdout.Fd()))
+
 func init() {
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" || !stdoutTTY {
 		anTeal, anGreen, anYellow, anOrange = "", "", "", ""
 		anMagenta, anCyan, anGray, anDim = "", "", "", ""
 		anWhite, anRed, anBold, anReset = "", "", "", ""
@@ -252,6 +258,34 @@ func probeLangTag(lang string) string {
 	return langColor(lang) + anBold + "[" + lang + "]" + anReset
 }
 
+// framelessWriter strips box-drawing borders so piped text output has no frames.
+// Lines that held only a border are dropped; blank lines are kept.
+type framelessWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+var frameChars = strings.NewReplacer("╭", " ", "╮", " ", "╰", " ", "╯", " ", "│", " ", "├", " ", "┤", " ", "─", " ")
+
+func (f *framelessWriter) Write(p []byte) (int, error) {
+	f.buf = append(f.buf, p...)
+	for {
+		i := bytes.IndexByte(f.buf, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		line := string(f.buf[:i])
+		f.buf = f.buf[i+1:]
+		stripped := strings.TrimRight(frameChars.Replace(line), " ")
+		if stripped == "" && strings.TrimSpace(line) != "" {
+			continue
+		}
+		if _, err := io.WriteString(f.w, stripped+"\n"); err != nil {
+			return 0, err
+		}
+	}
+}
+
 // ── File type detection ───────────────────────────────────────────────────────
 
 // isImageCodec returns true for codecs used by standalone image files.
@@ -397,7 +431,7 @@ func resolveMeta(tags map[string]string, keys []metaKey) [][2]string {
 
 // printMetaRows renders a metadata table inside an open box.
 // It prints a ├────┤ separator followed by aligned label  value rows.
-func printMetaRows(rows [][2]string, boxW int, borderColor string) {
+func printMetaRows(w io.Writer, rows [][2]string, boxW int, borderColor string) {
 	if len(rows) == 0 {
 		return
 	}
@@ -407,19 +441,19 @@ func printMetaRows(rows [][2]string, boxW int, borderColor string) {
 			maxLabel = n
 		}
 	}
-	fmt.Printf("  %s├%s┤%s\n", borderColor, strings.Repeat("─", boxW+2), anReset)
+	fmt.Fprintf(w, "  %s├%s┤%s\n", borderColor, strings.Repeat("─", boxW+2), anReset)
 	for _, r := range rows {
 		label := visPad(anGray+r[0]+anReset, maxLabel+visLen(anGray+anReset))
 		valW := max(boxW-maxLabel-2, 1)
 		content := label + "  " + anWhite + visTrunc(r[1], valW) + anReset
-		fmt.Printf("  %s│%s %s %s│%s\n",
+		fmt.Fprintf(w, "  %s│%s %s %s│%s\n",
 			borderColor, anReset, visPad(content, boxW), borderColor, anReset)
 	}
 }
 
 // ── File card (directory listing) ─────────────────────────────────────────────
 
-func printFileCard(info *probe.MediaInfo, tw int, num int) {
+func printFileCard(w io.Writer, info *probe.MediaInfo, tw int, num int) {
 	cardOuter := max(min(tw-2, 110), 32)
 	innerW := cardOuter - 2
 	contentW := innerW - 2
@@ -427,11 +461,11 @@ func printFileCard(info *probe.MediaInfo, tw int, num int) {
 
 	// line prints one row of content inside the card border.
 	line := func(content string) {
-		fmt.Printf(" %s│%s %s %s│%s\n",
+		fmt.Fprintf(w, " %s│%s %s %s│%s\n",
 			anMagenta, anReset, visPad(content, contentW), anMagenta, anReset)
 	}
 
-	fmt.Printf(" %s╭%s╮%s\n", anMagenta, border, anReset)
+	fmt.Fprintf(w, " %s╭%s╮%s\n", anMagenta, border, anReset)
 	numTag := anMagenta + fmt.Sprintf("#%d", num) + anReset + "  "
 	line(numTag + anBold + visTrunc(safeText(info.FileName), contentW-visLen(numTag)) + anReset)
 	line(anGray + buildMeta(info) + anReset)
@@ -475,12 +509,12 @@ func printFileCard(info *probe.MediaInfo, tw int, num int) {
 		}
 	}
 
-	fmt.Printf(" %s╰%s╯%s\n", anMagenta, border, anReset)
+	fmt.Fprintf(w, " %s╰%s╯%s\n", anMagenta, border, anReset)
 }
 
 // ── File info (single file, verbose) ──────────────────────────────────────────
 
-func printFileInfo(info *probe.MediaInfo) {
+func printFileInfo(w io.Writer, info *probe.MediaInfo) {
 	tw := termWidth()
 
 	// ── Image files: one compact combined box ──────────────────────────────────
@@ -511,21 +545,21 @@ func printFileInfo(info *probe.MediaInfo) {
 		border := strings.Repeat("─", boxW+2)
 
 		row := func(content string) {
-			fmt.Printf("  %s│%s %s %s│%s\n",
+			fmt.Fprintf(w, "  %s│%s %s %s│%s\n",
 				anTeal, anReset, visPad(visTrunc(content, boxW), boxW), anTeal, anReset)
 		}
 
-		fmt.Printf("\n  %s╭%s╮%s\n", anTeal, border, anReset)
+		fmt.Fprintf(w, "\n  %s╭%s╮%s\n", anTeal, border, anReset)
 		row(anBold + visTrunc(safeText(info.FileName), boxW) + anReset)
 		row(anGray + metaStr + anReset)
-		fmt.Printf("  %s├%s┤%s\n", anTeal, border, anReset)
+		fmt.Fprintf(w, "  %s├%s┤%s\n", anTeal, border, anReset)
 		for _, ls := range imgLines {
 			for _, l := range ls {
 				row(l)
 			}
 		}
-		printMetaRows(tagRows, boxW, anTeal)
-		fmt.Printf("  %s╰%s╯%s\n\n", anTeal, border, anReset)
+		printMetaRows(w, tagRows, boxW, anTeal)
+		fmt.Fprintf(w, "  %s╰%s╯%s\n\n", anTeal, border, anReset)
 		return
 	}
 
@@ -549,43 +583,43 @@ func printFileInfo(info *probe.MediaInfo) {
 	border := strings.Repeat("─", boxW+2)
 
 	row := func(color, content string) {
-		fmt.Printf("  %s│%s %s%s%s %s│%s\n",
+		fmt.Fprintf(w, "  %s│%s %s%s%s %s│%s\n",
 			anTeal, anReset, color, visPad(visTrunc(content, boxW), boxW), anReset, anTeal, anReset)
 	}
 
-	fmt.Printf("\n  %s╭%s╮%s\n", anTeal, border, anReset)
+	fmt.Fprintf(w, "\n  %s╭%s╮%s\n", anTeal, border, anReset)
 	row(anBold, safeText(info.FileName))
 	row(anGray, metaStr)
-	printMetaRows(tagRows, boxW, anTeal)
-	fmt.Printf("  %s╰%s╯%s\n\n", anTeal, border, anReset)
+	printMetaRows(w, tagRows, boxW, anTeal)
+	fmt.Fprintf(w, "  %s╰%s╯%s\n\n", anTeal, border, anReset)
 
 	printed := false
 	for _, v := range info.Video {
 		if !v.IsAttachedPic {
-			printVideoBox(v, info.DurationMs, tw)
+			printVideoBox(w, v, info.DurationMs, tw)
 			printed = true
 		}
 	}
 	if printed {
-		fmt.Println()
+		fmt.Fprintln(w)
 	}
 
 	if len(info.Audio) > 0 {
-		fmt.Printf("  %s%sAUDIO%s\n", anGreen, anBold, anReset)
+		fmt.Fprintf(w, "  %s%sAUDIO%s\n", anGreen, anBold, anReset)
 		var cards []trackCard
 		for _, a := range info.Audio {
 			cards = append(cards, makeAudioCard(a))
 		}
-		printTrackCards(cards, tw)
+		printTrackCards(w, cards, tw)
 	}
 
 	if len(info.Subtitle) > 0 {
-		fmt.Printf("  %s%sSUBS%s\n", anYellow, anBold, anReset)
+		fmt.Fprintf(w, "  %s%sSUBS%s\n", anYellow, anBold, anReset)
 		var cards []trackCard
 		for _, s := range info.Subtitle {
 			cards = append(cards, makeSubCard(s))
 		}
-		printTrackCards(cards, tw)
+		printTrackCards(w, cards, tw)
 	}
 }
 
@@ -721,9 +755,9 @@ func videoBoxLines(v probe.VideoStream, durationMs int64, boxInner int, color st
 }
 
 // printVideoBox prints a video box, indented by 2 spaces.
-func printVideoBox(v probe.VideoStream, durationMs int64, tw int) {
+func printVideoBox(w io.Writer, v probe.VideoStream, durationMs int64, tw int) {
 	for _, line := range videoBoxLines(v, durationMs, tw-4, anWhite, false) {
-		fmt.Printf("  %s\n", line)
+		fmt.Fprintf(w, "  %s\n", line)
 	}
 }
 
@@ -812,11 +846,11 @@ func trackCardRowLines(cards []trackCard, totalW int) []string {
 }
 
 // printTrackCards prints track card rows indented by 2 spaces.
-func printTrackCards(cards []trackCard, tw int) {
+func printTrackCards(w io.Writer, cards []trackCard, tw int) {
 	for _, line := range trackCardRowLines(cards, tw-2) {
-		fmt.Printf("  %s\n", line)
+		fmt.Fprintf(w, "  %s\n", line)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 }
 
 // makeAudioCard builds a trackCard for one audio stream.
@@ -883,4 +917,21 @@ func makeSubCard(s probe.SubStream) trackCard {
 		color: anYellow,
 		lines: []string{strings.Join(parts, "  ")},
 	}
+}
+
+// ── Doctor ────────────────────────────────────────────────────────────────────
+
+func printDoctor(w io.Writer, statuses []tools.Status) {
+	fmt.Fprintln(w)
+	for _, st := range statuses {
+		switch {
+		case !st.Found:
+			fmt.Fprintf(w, "  %s✖ %-12s%s %s\n", anRed, st.Name, anReset, safeText(st.Error))
+		case st.Error != "":
+			fmt.Fprintf(w, "  %s! %-12s%s %s  %s%s%s\n", anYellow, st.Name, anReset, safeText(st.Error), anDim, safeText(st.Path), anReset)
+		default:
+			fmt.Fprintf(w, "  %s✔ %-12s%s %s%-16s%s %s%s%s\n", anGreen, st.Name, anReset, anWhite, safeText(st.Version), anReset, anDim, safeText(st.Path), anReset)
+		}
+	}
+	fmt.Fprintln(w)
 }
