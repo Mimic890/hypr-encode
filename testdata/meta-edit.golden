@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "results": [
+    {
+      "path": "a.mkv",
+      "output": "a.mkv",
+      "backend": "mkvpropedit",
+      "command": [
+        "mkvpropedit",
+        "--quiet",
+        "/media/a.mkv",
+        "--edit",
+        "track:a1",
+        "--set",
+        "language=rus"
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "path": "b.mp4",
+      "error": "b.mp4 has no track a:0"
+    }
+  ]
+}

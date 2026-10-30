@@ -13,6 +13,7 @@ import (
 
 	"github.com/Mimic890/hypr-encode/internal/testmedia"
 	"github.com/Mimic890/hypr-encode/pkg/convert"
+	"github.com/Mimic890/hypr-encode/pkg/meta"
 	"github.com/Mimic890/hypr-encode/pkg/probe"
 	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
@@ -136,17 +137,25 @@ func TestJSONGolden(t *testing.T) {
 
 	a.writeJSON(infoDoc{
 		SchemaVersion: schemaVersion,
-		Files: []*probe.MediaInfo{{
+		Files: []infoFile{{MediaInfo: &probe.MediaInfo{
 			FilePath: "/media/demo.mkv", FileName: "demo.mkv", FileSize: 1048576, DurationMs: 10250,
 			Format: "matroska,webm", FormatLong: "Matroska / WebM", BitrateBps: 818400, Chapters: 2,
 			Tags: map[string]string{"title": "Demo"},
 			Video: []probe.VideoStream{{
 				Index: 0, Codec: "hevc", Profile: "Main 10", Width: 3840, Height: 2160, FPS: 23.976,
-				PixFmt: "yuv420p10le", BitDepth: 10, Language: "und",
+				PixFmt: "yuv420p10le", BitDepth: 10, Language: "und", Default: true, Tags: map[string]string{},
 				HDR: probe.HDRInfo{IsHDR10: true, MaxCLL: 1000, ColorPrimaries: "bt2020", ColorTransfer: "smpte2084"},
 			}},
-			Audio:    []probe.AudioStream{{Index: 1, Codec: "eac3", Channels: 6, ChannelLayout: "5.1(side)", SampleRate: 48000, Language: "eng", IsAtmos: true}},
-			Subtitle: []probe.SubStream{{Index: 2, Codec: "subrip", Language: "rus", Forced: true}},
+			Audio: []probe.AudioStream{{Index: 1, Codec: "eac3", Channels: 6, ChannelLayout: "5.1(side)", SampleRate: 48000,
+				Language: "eng", IsAtmos: true, Default: true, Tags: map[string]string{"language": "eng"}}},
+			Subtitle: []probe.SubStream{{Index: 2, Codec: "subrip", Language: "rus", Forced: true, Tags: map[string]string{"language": "rus"}}},
+		}}, {
+			MediaInfo: &probe.MediaInfo{
+				FilePath: "/media/photo.jpg", FileName: "photo.jpg", FileSize: 2048, Format: "image2", Tags: map[string]string{},
+				Video: []probe.VideoStream{{Codec: "mjpeg", Width: 64, Height: 48, Tags: map[string]string{}}},
+				Audio: []probe.AudioStream{}, Subtitle: []probe.SubStream{},
+			},
+			Exif: map[string]map[string]any{"IFD0": {"Make": "Canon", "Model": "EOS R6"}, "GPS": {"GPSLatitude": "55 deg 45' 0.00\" N"}},
 		}},
 		Errors: []itemError{{Path: "/media/broken.mp4", Error: "ffprobe failed"}},
 	})
@@ -170,6 +179,25 @@ func TestJSONGolden(t *testing.T) {
 	emit(convert.Event{JobID: 1, Type: "done", Input: "a.mkv", Output: "out/a.mkv"})
 	emit(convert.Event{JobID: 2, Type: "failed", Input: "b.mkv", Output: "out/b.mkv", Error: "ffmpeg failed"})
 	golden(t, "convert-events", buf.Bytes())
+
+	buf.Reset()
+	a.writeJSON(metaGetDoc{SchemaVersion: schemaVersion, Files: []*meta.FileMeta{{
+		Path: "/media/demo.mkv", Tags: map[string]string{"title": "Demo"},
+		Tracks: []meta.Track{
+			{Index: 0, Selector: "v:0", Type: "video", Codec: "hevc", Default: true, Tags: map[string]string{}},
+			{Index: 1, Selector: "s:0", Type: "subtitle", Codec: "subrip", Forced: true, Tags: map[string]string{"language": "rus"}},
+		},
+	}, {
+		Path: "/media/photo.jpg", Tags: map[string]string{}, Tracks: []meta.Track{},
+		Groups: map[string]map[string]any{"IFD0": {"Artist": "Ann"}, "XMP-dc": {"Title": "Sunset"}},
+	}}, Errors: []itemError{}})
+	golden(t, "meta-get", buf.Bytes())
+
+	buf.Reset()
+	a.writeJSON(metaEditDoc{SchemaVersion: schemaVersion, Results: []metaResult{
+		{Path: "a.mkv", Output: "a.mkv", Backend: "mkvpropedit", Command: []string{"mkvpropedit", "--quiet", "/media/a.mkv", "--edit", "track:a1", "--set", "language=rus"}},
+	}, Errors: []itemError{{Path: "b.mp4", Error: "b.mp4 has no track a:0"}}})
+	golden(t, "meta-edit", buf.Bytes())
 }
 
 func TestMediaPaths(t *testing.T) {

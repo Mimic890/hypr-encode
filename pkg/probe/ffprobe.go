@@ -67,52 +67,58 @@ type HDRInfo struct {
 
 // VideoStream describes one video track inside a file.
 type VideoStream struct {
-	Index         int     `json:"index"`
-	Codec         string  `json:"codec"`
-	CodecLong     string  `json:"codecLong"`
-	Profile       string  `json:"profile"`
-	Level         int     `json:"level"`
-	Width         int     `json:"width"`
-	Height        int     `json:"height"`
-	FPS           float64 `json:"fps"`
-	NbFrames      int64   `json:"nbFrames"`
-	PixFmt        string  `json:"pixFmt"`
-	BitDepth      int     `json:"bitDepth"`
-	BitrateBps    int64   `json:"bitrateBps"`
-	SizeBytes     int64   `json:"sizeBytes"`
-	ColorRange    string  `json:"colorRange"`
-	Language      string  `json:"language"`
-	Title         string  `json:"title"`
-	HDR           HDRInfo `json:"hdr"`
-	IsAttachedPic bool    `json:"isAttachedPic"` // true for cover art embedded in audio files
+	Index         int               `json:"index"`
+	Codec         string            `json:"codec"`
+	CodecLong     string            `json:"codecLong"`
+	Profile       string            `json:"profile"`
+	Level         int               `json:"level"`
+	Width         int               `json:"width"`
+	Height        int               `json:"height"`
+	FPS           float64           `json:"fps"`
+	NbFrames      int64             `json:"nbFrames"`
+	PixFmt        string            `json:"pixFmt"`
+	BitDepth      int               `json:"bitDepth"`
+	BitrateBps    int64             `json:"bitrateBps"`
+	SizeBytes     int64             `json:"sizeBytes"`
+	ColorRange    string            `json:"colorRange"`
+	Language      string            `json:"language"`
+	Title         string            `json:"title"`
+	HDR           HDRInfo           `json:"hdr"`
+	IsAttachedPic bool              `json:"isAttachedPic"` // true for cover art embedded in audio files
+	Default       bool              `json:"default"`
+	Tags          map[string]string `json:"tags"`
 }
 
 // AudioStream describes one audio track inside a file.
 type AudioStream struct {
-	Index         int    `json:"index"`
-	Codec         string `json:"codec"`
-	CodecLong     string `json:"codecLong"`
-	Profile       string `json:"profile"`
-	Channels      int    `json:"channels"`
-	ChannelLayout string `json:"channelLayout"`
-	SampleRate    int    `json:"sampleRate"`
-	BitrateBps    int64  `json:"bitrateBps"`
-	SizeBytes     int64  `json:"sizeBytes"`
-	Language      string `json:"language"`
-	Title         string `json:"title"`
-	IsAtmos       bool   `json:"isAtmos"`
-	IsDTSX        bool   `json:"isDtsX"`
+	Index         int               `json:"index"`
+	Codec         string            `json:"codec"`
+	CodecLong     string            `json:"codecLong"`
+	Profile       string            `json:"profile"`
+	Channels      int               `json:"channels"`
+	ChannelLayout string            `json:"channelLayout"`
+	SampleRate    int               `json:"sampleRate"`
+	BitrateBps    int64             `json:"bitrateBps"`
+	SizeBytes     int64             `json:"sizeBytes"`
+	Language      string            `json:"language"`
+	Title         string            `json:"title"`
+	IsAtmos       bool              `json:"isAtmos"`
+	IsDTSX        bool              `json:"isDtsX"`
+	Default       bool              `json:"default"`
+	Tags          map[string]string `json:"tags"`
 }
 
 // SubStream describes one subtitle track inside a file.
 type SubStream struct {
-	Index      int    `json:"index"`
-	Codec      string `json:"codec"`
-	Language   string `json:"language"`
-	Title      string `json:"title"`
-	Forced     bool   `json:"forced"`
-	BitrateBps int64  `json:"bitrateBps"`
-	SizeBytes  int64  `json:"sizeBytes"`
+	Index      int               `json:"index"`
+	Codec      string            `json:"codec"`
+	Language   string            `json:"language"`
+	Title      string            `json:"title"`
+	Forced     bool              `json:"forced"`
+	BitrateBps int64             `json:"bitrateBps"`
+	SizeBytes  int64             `json:"sizeBytes"`
+	Default    bool              `json:"default"`
+	Tags       map[string]string `json:"tags"`
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -264,6 +270,7 @@ func parseVideoStream(s rawStream) VideoStream {
 	}
 	vs.HDR = detectHDR(s)
 	vs.IsAttachedPic = s.Disposition.AttachedPic == 1
+	vs.Default, vs.Tags = s.Disposition.Default == 1, tagsOrEmpty(s.Tags)
 	return vs
 }
 
@@ -300,7 +307,7 @@ func parseAudioStream(s rawStream) AudioStream {
 		(strings.Contains(profileUp, "DTS:X") || strings.Contains(profileUp, "DTS-X")) {
 		as.IsDTSX = true
 	}
-
+	as.Default, as.Tags = s.Disposition.Default == 1, tagsOrEmpty(s.Tags)
 	return as
 }
 
@@ -314,6 +321,7 @@ func parseSubStream(s rawStream) SubStream {
 	}
 	ss.BitrateBps = tagInt64Prefix(s.Tags, "BPS")
 	ss.SizeBytes = tagInt64Prefix(s.Tags, "NUMBER_OF_BYTES")
+	ss.Default, ss.Tags = s.Disposition.Default == 1, tagsOrEmpty(s.Tags)
 	return ss
 }
 
@@ -499,6 +507,14 @@ func bitDepthFromPixFmt(pix string) int {
 	return 0
 }
 
+// tagsOrEmpty keeps JSON output stable: tags are an object, never null.
+func tagsOrEmpty(tags map[string]string) map[string]string {
+	if tags == nil {
+		return map[string]string{}
+	}
+	return tags
+}
+
 func validStreamSize(size, fileSize int64) int64 {
 	if size <= 0 || fileSize > 0 && size > fileSize {
 		return 0
@@ -545,6 +561,7 @@ type rawStream struct {
 }
 
 type rawDisposition struct {
+	Default     int `json:"default"`
 	Forced      int `json:"forced"`
 	AttachedPic int `json:"attached_pic"`
 }

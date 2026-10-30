@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/Mimic890/hypr-encode/pkg/meta"
 	"github.com/Mimic890/hypr-encode/pkg/probe"
 	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
@@ -60,6 +61,7 @@ Commands:
   info [path...]             Show media information (default command)
   convert <in...> -o <out>   Convert files with presets and a parallel queue
   preset <command>           List, show, save, remove or edit presets
+  meta get|set|rm <file...>  Read or edit container, track and image tags
   doctor                     Check external tools, versions and GPU presets
 
 hypr-encode <path...> is shorthand for hypr-encode info <path...>.
@@ -132,6 +134,8 @@ func (a *app) run(ctx context.Context, args []string) error {
 			return a.convert(ctx, args[1:])
 		case "preset":
 			return a.preset(ctx, args[1:])
+		case "meta":
+			return a.meta(ctx, args[1:])
 		case "help", "-h", "-help", "--help":
 			fmt.Fprint(a.stdout, usageText)
 			return nil
@@ -199,9 +203,15 @@ func batchErr(verb string, failed, total int) error {
 // ── info ──────────────────────────────────────────────────────────────────────
 
 type infoDoc struct {
-	SchemaVersion int                `json:"schemaVersion"`
-	Files         []*probe.MediaInfo `json:"files"`
-	Errors        []itemError        `json:"errors"`
+	SchemaVersion int         `json:"schemaVersion"`
+	Files         []infoFile  `json:"files"`
+	Errors        []itemError `json:"errors"`
+}
+
+// infoFile is ffprobe's view of a file plus, for images, every exiftool tag by group.
+type infoFile struct {
+	*probe.MediaInfo
+	Exif map[string]map[string]any `json:"exif,omitempty"`
 }
 
 type itemError struct {
@@ -223,7 +233,7 @@ func (a *app) info(ctx context.Context, args []string) error {
 	}
 
 	w := a.textOut()
-	doc := infoDoc{SchemaVersion: schemaVersion, Files: []*probe.MediaInfo{}, Errors: []itemError{}}
+	doc := infoDoc{SchemaVersion: schemaVersion, Files: []infoFile{}, Errors: []itemError{}}
 	var paths []string
 	for _, arg := range args {
 		found, err := expandPath(arg)
@@ -248,6 +258,12 @@ func (a *app) info(ctx context.Context, args []string) error {
 		report(e)
 	}
 
+	// Image tags come from exiftool when it is installed, else from ffprobe.
+	et := startExifTool(ctx, paths, meta.IsImage)
+	if et != nil {
+		defer et.Close()
+	}
+
 	detail := len(args) == 1 && len(paths) == 1 && paths[0] == args[0]
 	if len(paths) > 0 && !detail && !a.json {
 		fmt.Fprintln(w)
@@ -264,13 +280,18 @@ func (a *app) info(ctx context.Context, args []string) error {
 			report(doc.Errors[len(doc.Errors)-1])
 			continue
 		}
-		doc.Files = append(doc.Files, info)
+		file := infoFile{MediaInfo: info}
+		if et != nil && isImageFile(info) {
+			file.Exif, _ = et.ReadGroups(info.FilePath) // on failure the ffprobe tags remain
+		}
+		doc.Files = append(doc.Files, file)
+		shown := withExifTags(info, file.Exif)
 		switch {
 		case a.json:
 		case detail:
-			printFileInfo(w, info)
+			printFileInfo(w, shown)
 		default:
-			printFileCard(w, info, termWidth(), len(doc.Files))
+			printFileCard(w, shown, termWidth(), len(doc.Files))
 			fmt.Fprintln(w)
 		}
 	}

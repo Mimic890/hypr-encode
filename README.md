@@ -2,11 +2,15 @@
 
 Terminal media toolkit powered by [FFmpeg](https://ffmpeg.org/).
 
-It shows codecs, stream sizes, frame rate, HDR metadata, audio and subtitle tracks, language tags, and common media metadata without changing the inspected files.
+- **Inspect** codecs, stream sizes, frame rate, HDR metadata, audio and subtitle tracks, language tags and image EXIF data.
+- **Convert** files with built-in or custom presets, including GPU encoders, in a parallel queue.
+- **Edit metadata** of containers, tracks and photos with `mkvpropedit`, `exiftool` or an `ffmpeg` remux.
+
+Every command has `--json` output with a versioned schema and documented exit codes, so scripts and agents can drive it.
 
 ## Install
 
-Requirements: Go 1.21+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert`). Optional tools are listed by `hypr-encode doctor`.
+Requirements: Go 1.21+ and [FFmpeg](https://ffmpeg.org/) (`ffprobe`, and `ffmpeg` for `convert` and `meta`). Optional: [MKVToolNix](https://mkvtoolnix.download/) (`mkvpropedit`) for in-place Matroska edits and [ExifTool](https://exiftool.org/) for image metadata. `hypr-encode doctor` lists what is installed.
 
 ```sh
 go install github.com/Mimic890/hypr-encode@latest
@@ -29,6 +33,7 @@ hypr-encode <command> [flags] [args]
 | `info [path...]` | Show media information (default command) |
 | `convert <input...> -o <output>` | Convert files with presets and a parallel queue |
 | `preset <command>` | List, show, save, remove or edit presets |
+| `meta get\|set\|rm <file...>` | Read or edit container, track and image tags |
 | `doctor` | Check external tools, their versions and GPU presets |
 
 `hypr-encode <path...>` is shorthand for `hypr-encode info <path...>`. To inspect a file literally named like a command, use `hypr-encode info ./info`.
@@ -59,7 +64,9 @@ Output covers:
 - HDR10, HDR10+, HLG, and Dolby Vision data when reported by `ffprobe`
 - Audio codec, channels, sample rate, bitrate, stream size, and detectable Atmos or DTS:X profiles
 - Subtitle format, language, forced flag, title, and stream size
-- Still-image dimensions, pixel format, bit depth, and common EXIF tags
+- Still-image dimensions, pixel format, bit depth, and camera, lens, exposure and GPS tags
+
+For images, tags come from `exiftool` when it is installed (EXIF, IPTC, XMP, GPS and maker notes; one exiftool process serves the whole run) and from `ffprobe` otherwise.
 
 ### convert
 
@@ -158,6 +165,48 @@ jobs:
   gpu: 3
 ```
 
+### meta
+
+```text
+hypr-encode meta get [--json] <file|directory...>
+hypr-encode meta set [flags] <file...> KEY=VALUE...
+hypr-encode meta rm  [flags] <file...> KEY...
+```
+
+`get` shows container tags, every track with its selector (`v:0`, `a:1`, `s:0`), `default`/`forced` flags and tags, and, for images, MP4 and MOV, all exiftool tags by group (`IFD0`, `ExifIFD`, `GPS`, `XMP-dc`, `IPTC`, maker notes, ...).
+
+`set` and `rm` take the files first (arguments that exist on disk), then the tags. They never change an input unless `--in-place` is given; otherwise `-o` names the output file, or a directory for several inputs.
+
+| Flag | Meaning |
+| --- | --- |
+| `-o PATH` | Write the result here; the input stays untouched |
+| `--in-place` | Change the input files themselves |
+| `--overwrite` | Replace an existing `-o` output |
+| `--track SEL` | Edit a track (`v:N`, `a:N`, `s:N` or stream index) instead of the container |
+| `--from FILE` | `set` only: copy all tags from FILE first (images, MP4, MOV) |
+| `--group NAME` | `rm` only: clear an exiftool group such as `GPS` or `XMP` (repeatable; images, MP4, MOV) |
+| `--dry-run` | Print the backend command without changing anything |
+
+The keys `default` and `forced` set track flags and take `1`/`0`, `yes`/`no` or `true`/`false`. Other keys are tag names: `title` and `language` for tracks, any container tag such as `title`, `artist` or `comment`, and exiftool tag names for images (`Artist`, `XMP-dc:Title`, `GPSLatitude`).
+
+```sh
+hypr-encode meta set movie.mkv --in-place title="My Movie"
+hypr-encode meta set movie.mkv --in-place --track s:0 language=rus forced=1 default=0
+hypr-encode meta rm ./Photos/*.jpg --group GPS -o ./clean/
+hypr-encode meta set edited.jpg --from original.jpg --in-place
+```
+
+Backends:
+
+| File | Backend |
+| --- | --- |
+| Images (JPEG, PNG, WebP, TIFF, HEIC, AVIF, GIF, DNG and camera RAW) | `exiftool` |
+| MP4, MOV, M4V, 3GP with group keys (`Keys:Make`), `--group` or `--from` | `exiftool` |
+| Matroska (`mkv`, `mka`, `webm`) with `--in-place`, editing the container title or a track's `title`, `language`, `default`, `forced` | `mkvpropedit`, edits in place without rewriting the file |
+| Everything else, including MP3 and FLAC | `ffmpeg` remux with `-c copy` |
+
+ffmpeg and exiftool write a temp file next to the target and rename it only on success, so `--in-place` never leaves a half-written file and exiftool never leaves `*_original` backups. mkvpropedit edits the Matroska header in place by design. Batches use one exiftool process (`-stay_open`). A track that does not exist is an error. exiftool writes fail when a tag is unknown, not writable, or has an invalid value.
+
 ### doctor
 
 ```text
@@ -227,6 +276,10 @@ The stream objects are abbreviated above; the full field list is in [`testdata/i
 {"schemaVersion":1,"jobId":1,"type":"done","input":"a.mkv","output":"out/a.mkv"}
 {"schemaVersion":1,"jobId":2,"type":"failed","input":"b.mkv","output":"out/b.mkv","error":"ffmpeg failed on \"b.mkv\": ..."}
 ```
+
+`meta get --json` prints `{"schemaVersion":1,"files":[{"path","tags","tracks":[{"index","selector","type","codec","default","forced","tags"}],"groups":{...}}],"errors":[...]}`; `groups` appears only when exiftool read the file. `meta set|rm --json` prints `{"schemaVersion":1,"results":[{"path","output","backend","command"}],"errors":[...]}`, where `command` is set with `--dry-run`. See [`testdata/meta-get.golden`](testdata/meta-get.golden) and [`testdata/meta-edit.golden`](testdata/meta-edit.golden).
+
+In `info --json`, image files carry an `exif` object with the same groups, and every track has `default` and `tags`.
 
 `convert --dry-run --json` prints `{"schemaVersion":1,"jobs":[{"jobId","input","output","preset","load","threads","command":["ffmpeg",...]}]}`; see [`testdata/convert-dry-run.golden`](testdata/convert-dry-run.golden). The command shows the final output path; the real run writes to a temp file first.
 

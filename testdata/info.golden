@@ -40,7 +40,9 @@
             "colorPrimaries": "bt2020",
             "colorTransfer": "smpte2084"
           },
-          "isAttachedPic": false
+          "isAttachedPic": false,
+          "default": true,
+          "tags": {}
         }
       ],
       "audio": [
@@ -57,7 +59,11 @@
           "language": "eng",
           "title": "",
           "isAtmos": true,
-          "isDtsX": false
+          "isDtsX": false,
+          "default": true,
+          "tags": {
+            "language": "eng"
+          }
         }
       ],
       "subtitle": [
@@ -68,9 +74,64 @@
           "title": "",
           "forced": true,
           "bitrateBps": 0,
-          "sizeBytes": 0
+          "sizeBytes": 0,
+          "default": false,
+          "tags": {
+            "language": "rus"
+          }
         }
       ]
+    },
+    {
+      "filePath": "/media/photo.jpg",
+      "fileName": "photo.jpg",
+      "fileSize": 2048,
+      "durationMs": 0,
+      "format": "image2",
+      "formatLong": "",
+      "bitrateBps": 0,
+      "chapters": 0,
+      "tags": {},
+      "video": [
+        {
+          "index": 0,
+          "codec": "mjpeg",
+          "codecLong": "",
+          "profile": "",
+          "level": 0,
+          "width": 64,
+          "height": 48,
+          "fps": 0,
+          "nbFrames": 0,
+          "pixFmt": "",
+          "bitDepth": 0,
+          "bitrateBps": 0,
+          "sizeBytes": 0,
+          "colorRange": "",
+          "language": "",
+          "title": "",
+          "hdr": {
+            "isHdr10": false,
+            "isHdr10Plus": false,
+            "isHlg": false,
+            "isDolbyVision": false
+          },
+          "isAttachedPic": false,
+          "default": false,
+          "tags": {}
+        }
+      ],
+      "audio": [],
+      "subtitle": [],
+      "exif": {
+        "GPS": {
+          "GPSLatitude": "55 deg 45' 0.00\" N"
+        },
+        "IFD0": {
+          "Make": "Canon",
+          "Model": "EOS R6"
+        }
+      }
     }
   ],
   "errors": [

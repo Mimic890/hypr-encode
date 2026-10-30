@@ -14,6 +14,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 
+	"github.com/Mimic890/hypr-encode/pkg/meta"
 	"github.com/Mimic890/hypr-encode/pkg/probe"
 )
 
@@ -392,13 +393,16 @@ var (
 	imageMetaKeys = []metaKey{
 		{"camera", []string{"make"}},
 		{"model", []string{"model"}},
+		{"lens", []string{"lensmodel", "lens"}},
 		{"date", []string{"datetimeoriginal", "datetime", "creation_time", "date"}},
 		{"software", []string{"software"}},
-		{"ISO", []string{"isospeedratings", "iso_speed_ratings"}},
+		{"ISO", []string{"iso", "isospeedratings", "iso_speed_ratings"}},
 		{"aperture", []string{"fnumber", "f_number"}},
 		{"shutter", []string{"exposuretime", "exposure_time"}},
 		{"focal", []string{"focallength", "focal_length"}},
+		{"GPS", []string{"gpsposition"}},
 		{"artist", []string{"artist"}},
+		{"title", []string{"title"}},
 	}
 )
 
@@ -943,4 +947,76 @@ func printDoctor(w io.Writer, doc doctorDoc) {
 		}
 	}
 	fmt.Fprintln(w)
+}
+
+// withExifTags returns info with exiftool tags in place of ffprobe's for display.
+// Groups are merged in name order; the first group holding a tag wins.
+func withExifTags(info *probe.MediaInfo, groups map[string]map[string]any) *probe.MediaInfo {
+	if len(groups) == 0 {
+		return info
+	}
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	tags := map[string]string{}
+	for _, name := range names {
+		for tag, val := range groups[name] {
+			if _, ok := tags[tag]; !ok {
+				tags[tag] = fmt.Sprint(val)
+			}
+		}
+	}
+	shown := *info
+	shown.Tags = tags
+	return &shown
+}
+
+// ── Metadata ──────────────────────────────────────────────────────────────────
+
+func printMeta(w io.Writer, fm *meta.FileMeta) {
+	fmt.Fprintf(w, "\n  %s%s%s\n", anBold, safeText(fm.Path), anReset)
+	if len(fm.Tags) > 0 {
+		fmt.Fprintf(w, "  %s%sCONTAINER%s\n", anTeal, anBold, anReset)
+		printTagRows(w, fm.Tags, "    ")
+	}
+	for _, t := range fm.Tracks {
+		flags := ""
+		if t.Default {
+			flags += "  default"
+		}
+		if t.Forced {
+			flags += "  forced"
+		}
+		fmt.Fprintf(w, "  %s%s#%d %-4s%s %s%-8s%s %s%s%s%s\n", anMagenta, anBold, t.Index, t.Selector, anReset,
+			anGray, t.Type, anReset, safeText(t.Codec), anOrange, flags, anReset)
+		printTagRows(w, t.Tags, "      ")
+	}
+	names := make([]string, 0, len(fm.Groups))
+	for name := range fm.Groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(w, "  %s%s[%s]%s\n", anYellow, anBold, safeText(name), anReset)
+		tags := map[string]string{}
+		for k, v := range fm.Groups[name] {
+			tags[k] = fmt.Sprint(v)
+		}
+		printTagRows(w, tags, "    ")
+	}
+}
+
+func printTagRows(w io.Writer, tags map[string]string, indent string) {
+	keys := make([]string, 0, len(tags))
+	width := 0
+	for k := range tags {
+		keys = append(keys, k)
+		width = max(width, visLen(safeText(k)))
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(w, "%s%s%s%s  %s\n", indent, anGray, visPad(safeText(k), width), anReset, safeText(tags[k]))
+	}
 }
