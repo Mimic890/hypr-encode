@@ -15,7 +15,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Mimic890/hypr-encode/pkg/probe"
-	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
 // ── Colours ───────────────────────────────────────────────────────────────────
@@ -921,9 +920,9 @@ func makeSubCard(s probe.SubStream) trackCard {
 
 // ── Doctor ────────────────────────────────────────────────────────────────────
 
-func printDoctor(w io.Writer, statuses []tools.Status) {
+func printDoctor(w io.Writer, doc doctorDoc) {
 	fmt.Fprintln(w)
-	for _, st := range statuses {
+	for _, st := range doc.Tools {
 		switch {
 		case !st.Found:
 			fmt.Fprintf(w, "  %s✖ %-12s%s %s\n", anRed, st.Name, anReset, safeText(st.Error))
@@ -931,6 +930,16 @@ func printDoctor(w io.Writer, statuses []tools.Status) {
 			fmt.Fprintf(w, "  %s! %-12s%s %s  %s%s%s\n", anYellow, st.Name, anReset, safeText(st.Error), anDim, safeText(st.Path), anReset)
 		default:
 			fmt.Fprintf(w, "  %s✔ %-12s%s %s%-16s%s %s%s%s\n", anGreen, st.Name, anReset, anWhite, safeText(st.Version), anReset, anDim, safeText(st.Path), anReset)
+		}
+	}
+	if len(doc.GPUPresets) > 0 {
+		fmt.Fprintf(w, "\n  %s%sGPU PRESETS%s\n", anMagenta, anBold, anReset)
+	}
+	for _, g := range doc.GPUPresets {
+		if g.OK {
+			fmt.Fprintf(w, "  %s✔ %-12s%s %s%s%s\n", anGreen, g.Name, anReset, anDim, g.Encoder, anReset)
+		} else {
+			fmt.Fprintf(w, "  %s✖ %-12s%s %s%s%s\n", anDim, g.Name, anReset, anDim, visTrunc(safeText(g.Error), 100), anReset)
 		}
 	}
 	fmt.Fprintln(w)

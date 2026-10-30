@@ -1,0 +1,136 @@
+# Built-in presets. They are read-only; a user preset with the same name overrides one.
+# crf is a constant-quality value mapped per encoder (see qualityArgs in args.go).
+
+- name: h264
+  description: H.264 (x264 CRF 20), AAC audio
+  media: video
+  container: mkv
+  load: cpu-heavy
+  video: {codec: libx264, crf: 20, preset: medium}
+  audio: {codec: aac, bitrate: 192k}
+
+- name: hevc
+  description: HEVC (x265 CRF 22), audio copied
+  media: video
+  container: mkv
+  load: cpu-heavy
+  video: {codec: libx265, crf: 22, preset: medium}
+  audio: {codec: copy}
+
+- name: av1
+  description: AV1 (SVT-AV1 CRF 30), audio copied
+  media: video
+  container: mkv
+  load: cpu-heavy
+  video: {codec: libsvtav1, crf: 30, preset: "6"}
+  audio: {codec: copy}
+
+- name: remux
+  description: Copy all tracks into a new container
+  media: video
+  container: mkv
+  load: io
+  video: {codec: copy}
+  audio: {codec: copy}
+
+- name: hevc-nvenc
+  description: HEVC on NVIDIA NVENC (CQ 24), audio copied
+  extends: hevc
+  load: gpu
+  video: {codec: hevc_nvenc, crf: 24, preset: p5}
+
+- name: av1-nvenc
+  description: AV1 on NVIDIA NVENC (CQ 30), audio copied
+  extends: hevc
+  load: gpu
+  video: {codec: av1_nvenc, crf: 30, preset: p5}
+
+- name: hevc-qsv
+  description: HEVC on Intel Quick Sync (ICQ 24), audio copied
+  extends: hevc
+  load: gpu
+  video: {codec: hevc_qsv, crf: 24, preset: medium}
+
+- name: av1-qsv
+  description: AV1 on Intel Quick Sync (ICQ 30), audio copied
+  extends: hevc
+  load: gpu
+  video: {codec: av1_qsv, crf: 30, preset: medium}
+
+- name: hevc-amf
+  description: HEVC on AMD AMF (CQP 24), audio copied
+  extends: hevc
+  load: gpu
+  video: {codec: hevc_amf, crf: 24, preset: ""}
+
+- name: av1-amf
+  description: AV1 on AMD AMF (CQP 120 of 255), audio copied
+  extends: hevc
+  load: gpu
+  video: {codec: av1_amf, crf: 120, preset: ""}
+
+- name: hevc-vaapi
+  description: HEVC on VAAPI (CQP 24, /dev/dri/renderD128), audio copied
+  extends: hevc
+  load: gpu
+  inputArgs: [-vaapi_device, /dev/dri/renderD128]
+  video: {codec: hevc_vaapi, crf: 24, preset: ""}
+  args: [-vf, "format=nv12,hwupload"]
+
+- name: av1-vaapi
+  description: AV1 on VAAPI (CQP 120 of 255, /dev/dri/renderD128), audio copied
+  extends: hevc-vaapi
+  video: {codec: av1_vaapi, crf: 120}
+
+- name: opus
+  description: Opus 160 kb/s, audio tracks only
+  media: audio
+  container: opus
+  load: light
+  tracks: [a]
+  audio: {codec: libopus, bitrate: 160k}
+
+- name: aac
+  description: AAC 256 kb/s in M4A, audio tracks only
+  media: audio
+  container: m4a
+  load: light
+  tracks: [a]
+  audio: {codec: aac, bitrate: 256k}
+
+- name: mp3
+  description: MP3 VBR V2 (LAME), audio tracks only
+  media: audio
+  container: mp3
+  load: light
+  tracks: [a]
+  audio: {codec: libmp3lame, crf: 2}
+
+- name: flac
+  description: FLAC lossless, audio tracks only
+  media: audio
+  container: flac
+  load: light
+  tracks: [a]
+  audio: {codec: flac}
+
+- name: jpeg
+  description: JPEG (quality scale 2), first image only
+  media: image
+  container: jpg
+  load: light
+  tracks: [v:0]
+  video: {codec: mjpeg, crf: 2}
+  args: [-frames:v, "1", -update, "1"]
+
+- name: webp
+  description: WebP (quality 85), first image only
+  extends: jpeg
+  container: webp
+  video: {codec: libwebp, crf: 85}
+
+- name: avif
+  description: AVIF (libaom CRF 30), first image only
+  extends: jpeg
+  container: avif
+  video: {codec: libaom-av1, crf: 30, args: [-still-picture, "1", -cpu-used, "6"]}

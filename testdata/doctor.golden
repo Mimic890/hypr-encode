@@ -12,5 +12,18 @@
       "found": false,
       "error": "mkvpropedit not found in PATH; install MKVToolNix"
     }
+  ],
+  "gpuPresets": [
+    {
+      "name": "hevc-nvenc",
+      "encoder": "hevc_nvenc",
+      "ok": true
+    },
+    {
+      "name": "hevc-amf",
+      "encoder": "hevc_amf",
+      "ok": false,
+      "error": "encoder hevc_amf is not included in this ffmpeg build"
+    }
   ]
 }

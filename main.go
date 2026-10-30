@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -56,8 +57,10 @@ func usageErr(format string, a ...any) error {
 const usageText = `Usage: hypr-encode <command> [flags] [args]
 
 Commands:
-  info [path...]   Show media information (default command)
-  doctor           Check external tools and their versions
+  info [path...]             Show media information (default command)
+  convert <in...> -o <out>   Convert files with presets and a parallel queue
+  preset <command>           List, show, save, remove or edit presets
+  doctor                     Check external tools, versions and GPU presets
 
 hypr-encode <path...> is shorthand for hypr-encode info <path...>.
 Run hypr-encode <command> -h for command flags.
@@ -66,11 +69,12 @@ Run hypr-encode <command> -h for command flags.
 type app struct {
 	stdout, stderr io.Writer
 	json           bool
+	cores          int // CPU thread budget for conversions
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	a := &app{stdout: os.Stdout, stderr: os.Stderr}
+	a := &app{stdout: os.Stdout, stderr: os.Stderr, cores: runtime.NumCPU()}
 	code := a.main(ctx, os.Args[1:])
 	stop()
 	os.Exit(code)
@@ -124,6 +128,10 @@ func (a *app) run(ctx context.Context, args []string) error {
 			return a.info(ctx, args[1:])
 		case "doctor":
 			return a.doctor(ctx, args[1:])
+		case "convert":
+			return a.convert(ctx, args[1:])
+		case "preset":
+			return a.preset(ctx, args[1:])
 		case "help", "-h", "-help", "--help":
 			fmt.Fprint(a.stdout, usageText)
 			return nil

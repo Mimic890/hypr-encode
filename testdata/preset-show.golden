@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "preset": {
+    "name": "hevc-nvenc",
+    "description": "HEVC on NVIDIA NVENC (CQ 24), audio copied",
+    "extends": "hevc",
+    "media": "video",
+    "container": "mkv",
+    "load": "gpu",
+    "video": {
+      "codec": "hevc_nvenc",
+      "crf": 24,
+      "preset": "p5"
+    },
+    "audio": {
+      "codec": "copy"
+    },
+    "subtitle": {},
+    "source": "builtin"
+  }
+}

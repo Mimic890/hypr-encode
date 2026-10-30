@@ -12,16 +12,20 @@ import (
 	"testing"
 
 	"github.com/Mimic890/hypr-encode/internal/testmedia"
+	"github.com/Mimic890/hypr-encode/pkg/convert"
 	"github.com/Mimic890/hypr-encode/pkg/probe"
 	"github.com/Mimic890/hypr-encode/pkg/tools"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
 
+// testdata is absolute because some tests change the working directory.
+var testdata, _ = filepath.Abs("testdata")
+
 // golden compares got with testdata/<name>.golden, or rewrites it with -update.
 func golden(t *testing.T, name string, got []byte) {
 	t.Helper()
-	path := filepath.Join("testdata", name+".golden")
+	path := filepath.Join(testdata, name+".golden")
 	if *update {
 		if err := os.WriteFile(path, got, 0o644); err != nil {
 			t.Fatal(err)
@@ -39,7 +43,7 @@ func golden(t *testing.T, name string, got []byte) {
 // runApp runs the CLI in-process and returns exit code, stdout and stderr.
 func runApp(ctx context.Context, args ...string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
-	code := (&app{stdout: &stdout, stderr: &stderr}).main(ctx, args)
+	code := (&app{stdout: &stdout, stderr: &stderr, cores: 8}).main(ctx, args)
 	return code, stdout.String(), stderr.String()
 }
 
@@ -128,7 +132,7 @@ func TestInfoTextIsFramelessWhenPiped(t *testing.T) {
 
 func TestJSONGolden(t *testing.T) {
 	var buf bytes.Buffer
-	a := &app{stdout: &buf}
+	a := &app{stdout: &buf, json: true}
 
 	a.writeJSON(infoDoc{
 		SchemaVersion: schemaVersion,
@@ -152,8 +156,20 @@ func TestJSONGolden(t *testing.T) {
 	a.writeJSON(doctorDoc{SchemaVersion: schemaVersion, Tools: []tools.Status{
 		{Name: "ffprobe", Found: true, Path: "/usr/bin/ffprobe", Version: "7.1"},
 		{Name: "mkvpropedit", Error: "mkvpropedit not found in PATH; install MKVToolNix"},
+	}, GPUPresets: []gpuStatus{
+		{Name: "hevc-nvenc", Encoder: "hevc_nvenc", OK: true},
+		{Name: "hevc-amf", Encoder: "hevc_amf", Error: "encoder hevc_amf is not included in this ffmpeg build"},
 	}})
 	golden(t, "doctor", buf.Bytes())
+
+	buf.Reset()
+	emit := a.convertEvents(2)
+	emit(convert.Event{JobID: 1, Type: "start", Input: "a.mkv", Output: "out/a.mkv", Threads: 4})
+	emit(convert.Event{JobID: 1, Type: "progress", Input: "a.mkv", Output: "out/a.mkv",
+		Progress: &convert.Progress{OutTimeMs: 1500, DurationMs: 3000, Percent: 50, FPS: 120, Speed: 4.8, SizeBytes: 65536}})
+	emit(convert.Event{JobID: 1, Type: "done", Input: "a.mkv", Output: "out/a.mkv"})
+	emit(convert.Event{JobID: 2, Type: "failed", Input: "b.mkv", Output: "out/b.mkv", Error: "ffmpeg failed"})
+	golden(t, "convert-events", buf.Bytes())
 }
 
 func TestMediaPaths(t *testing.T) {
